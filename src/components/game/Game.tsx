@@ -5,7 +5,7 @@ import Tile from './Tile';
 import GameOverModal from './GameOverModal';
 import { dictionary } from '@/data/dictionary';
 import { Rule, RuleCategories } from '@/data/rules';
-import { PlayerStatsContext, PlayerStats } from '@/context/PlayerStatsContext';
+import { PlayerStatsContext, PlayerStats, SavedDailyState } from '@/context/PlayerStatsContext';
 
 function mulberry32(seed: number) {
     return function () {
@@ -38,10 +38,6 @@ interface DraggingTile {
     size: number;
 }
 
-interface GameProps {
-    playerStats: PlayerStats | null;
-    savedDailyState: any | null;
-}
 
 const GridWidth = 12;
 const GridHeight = 12;
@@ -72,9 +68,10 @@ function getEventPageCoordinates(e: MouseEvent | TouchEvent): { x: number; y: nu
     }
     return null;
 }
-export default function Game({ playerStats, savedDailyState }: GameProps) {
+export default function Game() {
 
     const context = useContext(PlayerStatsContext);
+    const playerStats = context?.stats;
     const updateStats = context?.updateStats;
     const saveDailyGameState = context?.saveDailyGameState;
 
@@ -89,6 +86,8 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
     const [finalScore, setFinalScore] = useState(0);
     const [timeLeft, setTimeLeft] = useState(60 * 5)
     const [isGameOver, setIsGameOver] = useState(false);
+    const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
+
 
     const [draggingTile, setDraggingTile] = useState<DraggingTile | null>(null);
     const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
@@ -100,6 +99,7 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
     const gridContainerRef = useRef<HTMLDivElement>(null);
 
     const isInitialized = useRef(false);
+    const hasSubmittedScore = useRef(false);
 
     // console.log('[RENDER] Component rendering.', {
     //     isDragging: !!draggingTile,
@@ -108,32 +108,91 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
 
     useEffect(() => {
         draggingTileRef.current = draggingTile;
-        console.log('[REF SYNC] draggingTileRef.current updated.', draggingTileRef.current);
     }, [draggingTile]);
 
     useEffect(() => {
-        // Check for the updateStats function to avoid errors on first render
-        if (isGameOver && playerStats && updateStats) {
-            const todayStr = new Date().toISOString().slice(0, 10);
+        const savedJSON = localStorage.getItem('dailyWordGameState');
+        const todayStr = new Date().toISOString().slice(0, 10);
+        if (savedJSON) {
+            const data = JSON.parse(savedJSON);
+            if (data.saveDate === todayStr) {
+                setSavedDailyState(data.gameState);
+            }
+        }
+    }, []);
 
-            // Avoid re-updating if the last game saved is already for today
-            if (playerStats.lastGame?.date === todayStr) {
+    useEffect(() => {
+        // We only want this effect to run when the game is over.
+        if (!isGameOver) {
+            return;
+        }
+
+        // Use the ref to ensure we only ever submit the score ONCE.
+        if (hasSubmittedScore.current) {
+            console.log("Score has already been submitted, skipping.");
+            return;
+        }
+
+        const submitScores = async () => {
+            // Check for necessary data before proceeding
+            if (!playerStats || !updateStats) {
+                console.error("Cannot submit score: playerStats or update function is missing.");
                 return;
             }
 
-            const newStats: PlayerStats = { ...playerStats };
-            if (finalScore > newStats.highScore) {
-                newStats.highScore = finalScore;
-            }
-            newStats.lastGame = {
-                date: todayStr,
-                score: finalScore,
-            };
+            console.log("Game over! Submitting scores to server...");
 
-            // Use the function from the context to update the stats
-            updateStats(newStats);
-        }
-    }, [isGameOver, playerStats, finalScore, updateStats]);
+            // Mark as submitted immediately to prevent race conditions.
+            hasSubmittedScore.current = true;
+
+            try {
+                const todayStr = new Date().toISOString().slice(0, 10);
+
+                // Update local stats for immediate UI feedback
+                const newStats: PlayerStats = { ...playerStats };
+                let isNewHighScore = false;
+                if (finalScore > newStats.highScore) {
+                    newStats.highScore = finalScore;
+                    isNewHighScore = true;
+                }
+                newStats.lastGame = { date: todayStr, score: finalScore };
+                updateStats(newStats);
+
+                // Submit daily score
+                await fetch('/api/submit-score', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        playerId: playerStats.username,
+                        score: finalScore,
+                        timeTaken: (60 * 5) - timeLeft,
+                    }),
+                });
+
+                // Submit new high score if applicable
+                if (isNewHighScore) {
+                    await fetch('/api/update-highscore', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            playerId: playerStats.username,
+                            newHighScore: finalScore,
+                        }),
+                    });
+                }
+
+                console.log("Scores successfully submitted.");
+
+            } catch (error) {
+                console.error("Failed to submit scores to server:", error);
+                // Optional: reset the flag if the API call fails, allowing a retry?
+                // hasSubmittedScore.current = false;
+            }
+        };
+
+        submitScores();
+
+    }, [isGameOver, playerStats, finalScore, timeLeft, updateStats]);
 
     useEffect(() => {
         const container = gridContainerRef.current;
@@ -228,7 +287,7 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
         }
         setDailyRules(selectedRules);
 
-        let bag: TileData[] = [];
+        const bag: TileData[] = [];
         let idCounter = 0;
         for (const [letter, count] of Object.entries(TileDistribution)) {
             for (let i = 0; i < count; i++) {
@@ -263,25 +322,30 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
     }, [initializeGame]);
 
     useEffect(() => {
+        // If the game is already over, do nothing. Don't start a timer.
         if (isGameOver) {
             return;
         }
 
+        // If the game is not over, set up the interval.
         const timerId = setInterval(() => {
             setTimeLeft(prevTime => {
+                // When the timer is about to hit zero, end the game.
                 if (prevTime <= 1) {
                     setIsGameOver(true);
                     return 0;
                 }
+                // Otherwise, just count down.
                 return prevTime - 1;
             });
         }, 1000);
 
+        // The cleanup function will clear the interval when the component
+        // unmounts or when isGameOver becomes true.
         return () => {
             clearInterval(timerId);
         };
-        isInitialized.current = true;
-    }, [savedDailyState]);
+    }, [isGameOver]);
 
     const checkForWords = useCallback((currentGrid: (PlacedTile | null)[][]) => {
         let newTotalLengths = 0;
@@ -379,17 +443,13 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
     ) => {
         if (isGameOver) return;
 
-        console.log(`[START] Drag initiated on tile: ${tile.letter}`);
 
         const coords = getEventPageCoordinates(e.nativeEvent);
         if (!coords) {
-            console.error('[START] Could not get coordinates.');
             return;
         }
 
         const rect = e.currentTarget.getBoundingClientRect();
-        const offsetX = coords.x - (rect.left + window.scrollX);
-        const offsetY = coords.y - (rect.top + window.scrollY);
 
         const dragSize = origin.type === 'grid' ? tileSize : 48;
 
@@ -403,11 +463,6 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
 
         const newDragPosition = { x: coords.x, y: coords.y };
 
-        // --- LOG #4: To see the exact state being set ---
-        console.log('[START] Setting state:', {
-            newDraggingTile,
-            newDragPosition
-        });
 
         setDragPosition(newDragPosition);
         setDraggingTile(newDraggingTile);
@@ -429,22 +484,16 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
     };
 
     const handleDragMove = useCallback((e: MouseEvent | TouchEvent) => {
-        console.log('[MOVE] handleDragMove event triggered.');
 
         if (draggingTileRef.current) {
-            console.log('[MOVE] Drag in progress. Updating position.');
             if (e.cancelable) {
                 e.preventDefault();
             }
-            console.log("Dragging tile:", draggingTileRef.current.tile.letter);
 
             const coords = getEventPageCoordinates(e);
             if (coords) {
                 setDragPosition({ x: coords.x, y: coords.y });
             }
-        } else {
-            // --- LOG #7: Why did it fail? ---
-            console.log('[MOVE] FAILED. draggingTileRef.current is null.');
         }
     }, []);
 
@@ -564,51 +613,49 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
 
     const handleDragEnd = useCallback((e: MouseEvent | TouchEvent) => {
         const currentDraggingTile = draggingTileRef.current;
-        if (!currentDraggingTile || !gameBoardRef.current) return;
+        // If there's no tile being dragged, do nothing and ensure state is clean.
+        if (!currentDraggingTile || !gameBoardRef.current) {
+            setDraggingTile(null);
+            return;
+        }
 
         const coords = getEventPageCoordinates(e);
-        let placedOrSwapped = false;
+        let wasSuccessful = false; // We will use this to track if the drop was valid.
 
         if (coords) {
-
             const boardRect = gameBoardRef.current.getBoundingClientRect();
-            // ... (your logic to calculate dropX, dropY, gridX, gridY is correct) ...
             const dropX = coords.x - (boardRect.left + window.scrollX);
             const dropY = coords.y - (boardRect.top + window.scrollY);
-
             const gridX = Math.floor(dropX / tileSize);
             const gridY = Math.floor(dropY / tileSize);
-
-            let placedOrSwapped = false;
-            let finalGridState: (PlacedTile | null)[][] | null = null;
 
             if (gridX >= 0 && gridX < GridWidth && gridY >= 0 && gridY < GridHeight) {
                 const targetTile = grid[gridY][gridX];
 
-                if (targetTile === null) { // Place on empty
+                // --- SCENARIO 1: Drop on an EMPTY cell ---
+                if (targetTile === null) {
                     const newGrid = grid.map(r => [...r]);
                     newGrid[gridY][gridX] = { ...currentDraggingTile.tile, gridX, gridY, isFound: false };
 
-                    // VVVV THIS IS THE NEW, CRITICAL LOGIC VVVV
-                    // Now we update the origin state
                     if (currentDraggingTile.origin.type === 'grid') {
-                        const { x, y } = currentDraggingTile.origin;
-                        newGrid[y][x] = null; // Clear the origin spot
-                    } else {
-                        const { index } = currentDraggingTile.origin;
+                        newGrid[currentDraggingTile.origin.y][currentDraggingTile.origin.x] = null;
+                    } else if (currentDraggingTile.origin.type === 'hand') {
                         setHand(h => {
                             const newHand = [...h];
-                            newHand[index] = null;
+                            // Type guard ensures .index is only accessed for 'hand' type
+                            if (currentDraggingTile.origin.type === 'hand') {
+                                newHand[currentDraggingTile.origin.index] = null;
+                            }
                             return newHand;
                         });
                     }
 
                     setGrid(newGrid);
                     checkForWords(newGrid);
-                    placedOrSwapped = true;
+                    wasSuccessful = true; // Mark the action as successful.
 
-                } else if (currentDraggingTile.origin.type === 'grid') { // Swap
-                    // This logic only needs one state update
+                    // --- SCENARIO 2: SWAP tiles already on the grid ---
+                } else if (currentDraggingTile.origin.type === 'grid') {
                     const newGrid = grid.map(r => [...r]);
                     const originX = currentDraggingTile.origin.x;
                     const originY = currentDraggingTile.origin.y;
@@ -618,13 +665,32 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
 
                     setGrid(newGrid);
                     checkForWords(newGrid);
-                    placedOrSwapped = true;
+                    wasSuccessful = true; // Mark the action as successful.
                 }
             }
         }
 
-        // The revert logic is now simpler: just clear the dragging state.
-        // The original tile will automatically become visible again.
+        // --- SCENARIO 3: REVERT if the drop was invalid or unsuccessful ---
+        if (!wasSuccessful) {
+            // This logic is only for reverting the visual state, no need to call checkForWords.
+            if (currentDraggingTile.origin.type === 'grid') {
+                const { x, y } = currentDraggingTile.origin;
+                setGrid(g => {
+                    const newG = g.map(row => [...row]);
+                    newG[y][x] = { ...currentDraggingTile.tile, gridX: x, gridY: y, isFound: false };
+                    return newG;
+                });
+            } else {
+                const { index } = currentDraggingTile.origin;
+                setHand(h => {
+                    const newH = h.map(item => item);
+                    newH[index] = currentDraggingTile.tile;
+                    return newH;
+                });
+            }
+        }
+
+        // Finally, always clear the dragging state.
         setDraggingTile(null);
 
     }, [grid, hand, tileSize, checkForWords]);
@@ -684,8 +750,8 @@ export default function Game({ playerStats, savedDailyState }: GameProps) {
             </div>
 
             {/* Middle Row: Rule Display with Colors */}
-           <div className="w-full bg-gray-900/50 p-3 rounded-lg mb-4 lg:mx-0">
-                <h3 className="text-lg font-bold text-yellow-300 mb-2">Today's Rules:</h3>
+            <div className="w-full bg-gray-900/50 p-3 rounded-lg mb-4 lg:mx-0">
+                <h3 className="text-lg font-bold text-yellow-300 mb-2">Today&apos;s Rules:</h3>
                 {dailyRules.length > 0 ? (
                     <ul className="space-y-2">
                         {dailyRules.map((rule, index) => {

@@ -12,7 +12,7 @@ export default function AboutPage() {
             <p className="text-lg text-gray-700 mb-4">
                 Scrabdle is a daily word game where players compete to create the highest scoring board of words that day.
                 <br />
-                What constitutes a high scoring word changes daily, so players must adapt their strategies to the current day's rules.
+                What constitutes a high scoring word changes daily, so players must adapt their strategies to the current day&apos;s rules.
                 <br />
                 Rules can include:
                 <ul className="list-disc list-inside mb-4">

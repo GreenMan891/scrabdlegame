@@ -1,4 +1,5 @@
 import { PlacedTile } from "@/components/game/Game";
+import { dictionary } from "./categorized_dictionary";
 
 export interface RuleContext {
     validWords: string[];
@@ -173,7 +174,7 @@ export const RuleCategories: RuleCategory[] = [
                     let bonus = 0;
                     let achievementCount = 0;
                     const contributingTileIds = new Set<number>();
-                    for (const [word, tiles] of wordToTilesMap.entries()) {
+                    for (const [, tiles] of wordToTilesMap.entries()) {
                         if (tiles.every(tile => tile.value === 1)) {
                             bonus += 20;
                             achievementCount++;
@@ -184,5 +185,42 @@ export const RuleCategories: RuleCategory[] = [
                 },
             }
         ]
-    }
+    },
+    {
+    id: 'cat_theme',
+    name: 'Themed Word Bonuses',
+    rules: [
+      {
+        id: 'nature_double_points',
+        description: 'Double points for each word related to nature.',
+        apply: ({ wordToTilesMap }) => {
+          let bonus = 0;
+          let achievementCount = 0;
+          const contributingTileIds = new Set<number>();
+
+          // We iterate through each valid word and its corresponding tiles
+          for (const [word, tiles] of wordToTilesMap.entries()) {
+            // We get the full data object for this word from our new dictionary
+            const wordData = dictionary.get(word.toLowerCase());
+
+            // If the word exists and has a 'theme' property...
+            if (wordData?.theme === 'Nature') {
+              achievementCount++; // Increment the achievement counter
+              
+              // Calculate the base value of the tiles in this word
+              const wordBaseValue = tiles.reduce((sum, tile) => sum + tile.value, 0);
+              // The bonus is equal to the word's base value (for a 2x total)
+              bonus += wordBaseValue;
+              
+              // Mark all tiles in this themed word as contributing
+              tiles.forEach(tile => contributingTileIds.add(tile.id));
+            }
+          }
+          
+          return { bonus, contributingTileIds, achievementCount };
+        },
+      },
+      // You can add more theme-based rules here in the future
+    ],
+  },
 ];

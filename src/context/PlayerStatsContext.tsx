@@ -9,6 +9,21 @@ export interface PlayerStats {
   } | null;
 }
 
+export interface SavedDailyState {
+  grid: any[][]; // You can make these types more specific if you want
+  hand: any[];
+  tileBag: any[];
+  basePoints: number;
+  totalLengths: number;
+  finalScore: number;
+  bonusPoints: number;
+  dailyRules: any[];
+  metRuleCounts: [string, number][]; // This is how a Map gets serialized
+  timeLeft: number;
+  isGameOver: boolean;
+}
+
+
 // NEW: Define the shape of the context value
 export interface PlayerStatsContextType {
   stats: PlayerStats | null;

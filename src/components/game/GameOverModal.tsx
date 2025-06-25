@@ -1,18 +1,15 @@
-import React, { useContext } from 'react';
-import { PlayerStatsContext } from '@/context/PlayerStatsContext';
+import React from 'react';
+import Leaderboard from './Leaderboard'; // Import the new component
 
 interface GameOverModalProps {
-  score: number; // The score from this specific game
+  score: number;
 }
 
 export default function GameOverModal({ score }: GameOverModalProps) {
-  // VVVV CONSUME THE CONTEXT HERE VVVV
-  const context = useContext(PlayerStatsContext);
-  const stats = context?.stats;
-
   return (
-    <div className="fixed top-0 left-0 w-screen h-screen z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-green-900 text-white p-6 sm:p-8 rounded-xl shadow-2xl flex flex-col items-center gap-4 animate-fade-in-up text-center w-11/12 max-w-md">
+    <div className="fixed top-0 left-0 w-screen h-screen z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
+      {/* We make the content box taller and add padding to accommodate the leaderboard */}
+      <div className="bg-green-900 text-white rounded-xl shadow-2xl flex flex-col items-center gap-4 text-center w-full max-w-lg p-6 animate-fade-in-up">
         <h2 className="text-4xl font-extrabold text-yellow-400">Game Over!</h2>
         
         <div>
@@ -20,23 +17,8 @@ export default function GameOverModal({ score }: GameOverModalProps) {
           <p className="text-6xl font-bold">{score}</p>
         </div>
 
-        {/* VVVV NEW STATS SECTION VVVV */}
-        <div className="w-full bg-green-800 rounded-lg p-4 mt-2 space-y-2 text-left">
-          {stats ? (
-            <>
-              <div className="flex justify-between items-baseline">
-                <span className="text-gray-400">Player ID:</span>
-                <span className="font-mono text-lg">#{stats.username}</span>
-              </div>
-              <div className="flex justify-between items-baseline">
-                <span className="text-gray-400">High Score:</span>
-                <span className="font-bold text-lg text-yellow-300">{stats.highScore}</span>
-              </div>
-            </>
-          ) : (
-            <p className="text-center text-gray-300">Loading stats...</p>
-          )}
-        </div>
+        {/* The leaderboard component will fetch and display itself */}
+        <Leaderboard />
 
         <p className="mt-2 text-gray-400">Come back tomorrow for a new puzzle!</p>
       </div>

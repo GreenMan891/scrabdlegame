@@ -1,61 +1,72 @@
-"use client"; // This page now uses state and hooks
+"use client";
 
 import { useState, useEffect } from 'react';
 import Game from "@/components/game/Game";
-import { PlayerStatsContext, PlayerStats, PlayerStatsContextType } from '@/context/PlayerStatsContext';
+import { PlayerStatsContext, PlayerStats, PlayerStatsContextType, SavedDailyState } from '@/context/PlayerStatsContext';
+import WelcomeMessage from '@/components/WelcomeMessage';
 
 const PLAYER_STATS_KEY = 'dailyWordPlayerStats';
-const DAILY_GAME_STATE_KEY = 'dailyWordGameState'; // Bring this key here
+const DAILY_GAME_STATE_KEY = 'dailyWordGameState';
 
 export default function HomePage() {
-  // VVVV STATE MANAGEMENT MOVED HERE VVVV
   const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null);
-  const [savedDailyState, setSavedDailyState] = useState<any>(null);
+  const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   // This useEffect loads or creates the stats ONCE when the homepage loads.
-  useEffect(() => {
-    try {
-      // VVVV THIS IS THE FIX: CHECK FOR RESET FIRST VVVV
-      const urlParams = new URLSearchParams(window.location.search);
-      const devReset = urlParams.get('reset') === 'true';
-
-      if (devReset) {
-        // If reset is requested, clear the daily game state from storage.
-        localStorage.removeItem(DAILY_GAME_STATE_KEY);
-      }
-
-      // --- Load Player Stats (this part is unchanged) ---
-      const savedStatsJSON = localStorage.getItem(PLAYER_STATS_KEY);
-      if (savedStatsJSON) {
-        setPlayerStats(JSON.parse(savedStatsJSON));
-      } else {
-        const newUsername = Math.floor(1000 + Math.random() * 999000);
-        const newStats: PlayerStats = {
-          username: newUsername,
-          highScore: 0,
-          lastGame: null,
-        };
-        localStorage.setItem(PLAYER_STATS_KEY, JSON.stringify(newStats));
-        setPlayerStats(newStats);
-      }
-
-      const savedDailyGameJSON = localStorage.getItem(DAILY_GAME_STATE_KEY);
-      const todayStr = new Date().toISOString().slice(0, 10);
-
-      if (savedDailyGameJSON) {
-        const dailyData = JSON.parse(savedDailyGameJSON);
-        if (dailyData.saveDate === todayStr) {
-          setSavedDailyState(dailyData.gameState);
+ useEffect(() => {  
+    const initializeUser = async () => {
+      try {
+        let stats: PlayerStats | null = null;
+        const savedStatsJSON = localStorage.getItem(PLAYER_STATS_KEY);
+        
+        if (savedStatsJSON) {
+          // If stats exist, parse and use them.
+          stats = JSON.parse(savedStatsJSON);
+        } else {
+          // --- NEW USER FLOW ---
+          // No stats found, so call our API to register a new user.
+          console.log("No player stats found. Registering new player...");
+          const response = await fetch('/api/register', { method: 'POST' });
+          
+          if (!response.ok) {
+            throw new Error('Failed to register new player');
+          }
+          
+          const data = await response.json();
+          const newPlayerId = data.playerId;
+          
+          stats = {
+            username: newPlayerId, // Use the ID from the API
+            highScore: 0,
+            lastGame: null,
+          };
+          
+          // Save the newly created profile to localStorage.
+          localStorage.setItem(PLAYER_STATS_KEY, JSON.stringify(stats));
+          console.log(`Registered as Player #${newPlayerId}`);
         }
+        
+        setPlayerStats(stats);
+        
+        // --- Daily Game State Logic (unchanged) ---
+        const savedDailyGameJSON = localStorage.getItem(DAILY_GAME_STATE_KEY);
+        const todayStr = new Date().toISOString().slice(0, 10);
+        if (savedDailyGameJSON) {
+          const dailyData = JSON.parse(savedDailyGameJSON);
+          if (dailyData.saveDate === todayStr) {
+            setSavedDailyState(dailyData.gameState);
+          }
+        }
+
+      } catch (error) {
+        console.error("Initialization failed:", error);
+      } finally {
+        setIsLoading(false);
       }
-
-
-    } catch (error) {
-      console.error("Failed to load saved data:", error);
-    } finally {
-      setIsLoading(false);
-    }
+    };
+    
+    initializeUser();
   }, []);// Empty array ensures it runs only once
 
   // Function to update stats, which we'll pass down via context
@@ -92,6 +103,7 @@ export default function HomePage() {
           {/* Make font size responsive */}
           <div className="max-w-4xl mx-auto px-4">
             <h1 className="text-3xl sm:text-4xl font-bold">Scrabdle - The daily anagram making game</h1>
+            <WelcomeMessage />
             <p className="text-lg text-gray-600 mt-2">
               Drag tiles from your hand to the grid to form words. Adapt your strategy to the daily rules and compete for a high score.
             </p>
@@ -119,7 +131,7 @@ export default function HomePage() {
               </div>
             ) : (
               // Once loading is false, render the game with the guaranteed stats
-              <Game playerStats={playerStats} savedDailyState={savedDailyState} />
+              <Game />
             )}
           </div>
         </div>
