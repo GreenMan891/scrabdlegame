@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import Tile from './Tile';
 import GameOverModal from './GameOverModal';
-import { dictionary } from '@/data/dictionary';
+import { dictionary } from '@/data/categorized_dictionary';
 import { Rule, RuleCategories } from '@/data/rules';
 import { PlayerStatsContext, PlayerStats, SavedDailyState } from '@/context/PlayerStatsContext';
 
