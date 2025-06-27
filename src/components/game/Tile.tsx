@@ -11,11 +11,11 @@ interface TileProps {
     dailyRules?: Rule[];
     appliedRuleIds?: string[];
     tileSize: number;
-    onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void;
-    onTouchStart: (e: React.TouchEvent<HTMLDivElement>) => void;
+    onMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
+    onTouchStart?: (e: React.TouchEvent<HTMLDivElement>) => void;
 }
 
-const Tile = React.forwardRef<HTMLDivElement, TileProps>(({ letter, value, isDragging = false, isFound = false, dailyRules = [], appliedRuleIds = [], onTouchStart, tileSize, onMouseDown }, ref) => {
+const Tile = React.forwardRef<HTMLDivElement, TileProps>(({ letter, value, isDragging = false, isFound = false, dailyRules = [], appliedRuleIds = [], onTouchStart = () => {}, tileSize, onMouseDown = () => {}, }, ref) => {
 
     const mainFontSize = tileSize * 0.55;
     const valueFontSize = tileSize * 0.22;

@@ -12,7 +12,6 @@ export default function HomePage() {
   const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null);
   const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isScoreSubmitted, setIsScoreSubmitted] = useState(false);
 
   // This useEffect loads or creates the stats ONCE when the homepage loads.
   useEffect(() => {
@@ -96,8 +95,6 @@ export default function HomePage() {
     stats: playerStats,
     updateStats,
     saveDailyGameState,
-    isScoreSubmitted,
-    setIsScoreSubmitted,
   };
   return (
     <PlayerStatsContext.Provider value={contextValue}>

@@ -205,7 +205,7 @@ export default function Game() {
 
         submitScores();
 
-    }, [isGameOver, playerStats, finalScore, timeLeft, updateStats, setIsScoreSubmitted]);
+    }, [isGameOver, playerStats, finalScore, timeLeft, updateStats]);
 
     useEffect(() => {
         const container = gridContainerRef.current;

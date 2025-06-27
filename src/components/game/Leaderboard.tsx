@@ -33,12 +33,11 @@ interface LeaderboardData {
   } | null;
 }
 
-export default function Leaderboard() {
+export default function Leaderboard({ isScoreSubmitted }: { isScoreSubmitted: boolean }) {
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const context = useContext(PlayerStatsContext);
   const currentPlayerId = context?.stats?.username;
-  const isScoreSubmitted = context?.isScoreSubmitted;
 
   useEffect(() => {
     if (!currentPlayerId) return;
