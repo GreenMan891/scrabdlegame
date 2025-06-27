@@ -1,5 +1,5 @@
 import { PlacedTile } from "@/components/game/Game";
-import { dictionary } from "./categorized_dictionary";
+import { dictionary, WordData } from './dictionaryService';
 
 export interface RuleContext {
     validWords: string[];
@@ -7,6 +7,7 @@ export interface RuleContext {
     allValidTiles: Map<number, PlacedTile>;
     basePoints: number;
     totalLengths: number;
+    dictionary: Map<string, WordData>;
 }
 
 export interface RuleApplicationResult {
@@ -35,7 +36,7 @@ export const RuleCategories: RuleCategory[] = [
             {
                 id: 'len_3',
                 description: 'Double points for each 3-letter word formed.',
-                apply: ({ wordToTilesMap }) => {
+                apply: ({ wordToTilesMap, dictionary }) => {
                     let bonus = 0;
                     let achievementCount = 0;
                     const contributingTileIds = new Set<number>();
@@ -197,22 +198,13 @@ export const RuleCategories: RuleCategory[] = [
           let bonus = 0;
           let achievementCount = 0;
           const contributingTileIds = new Set<number>();
-
-          // We iterate through each valid word and its corresponding tiles
           for (const [word, tiles] of wordToTilesMap.entries()) {
-            // We get the full data object for this word from our new dictionary
             const wordData = dictionary.get(word.toLowerCase());
-
-            // If the word exists and has a 'theme' property...
             if (wordData?.theme === 'Nature') {
-              achievementCount++; // Increment the achievement counter
-              
-              // Calculate the base value of the tiles in this word
+              achievementCount++;
               const wordBaseValue = tiles.reduce((sum, tile) => sum + tile.value, 0);
-              // The bonus is equal to the word's base value (for a 2x total)
               bonus += wordBaseValue;
               
-              // Mark all tiles in this themed word as contributing
               tiles.forEach(tile => contributingTileIds.add(tile.id));
             }
           }

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import Tile from './Tile';
 import GameOverModal from './GameOverModal';
-import { dictionary } from '@/data/categorized_dictionary';
+import { getDictionary, WordData } from '@/data/dictionaryService';
 import { Rule, RuleCategories } from '@/data/rules';
 import { PlayerStatsContext, PlayerStats, SavedDailyState } from '@/context/PlayerStatsContext';
 
@@ -87,7 +87,8 @@ export default function Game() {
     const [timeLeft, setTimeLeft] = useState(60 * 5)
     const [isGameOver, setIsGameOver] = useState(false);
     const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
-
+    const [dictionary, setDictionary] = useState<Map<string, WordData> | null>(null);
+    const [isLoadingDictionary, setIsLoadingDictionary] = useState(true);
 
     const [draggingTile, setDraggingTile] = useState<DraggingTile | null>(null);
     const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
@@ -105,6 +106,15 @@ export default function Game() {
     //     isDragging: !!draggingTile,
     //     dragPosition: dragPosition
     // });
+
+    useEffect(() => {
+        const loadData = async () => {
+            const dict = await getDictionary();
+            setDictionary(dict);
+            setIsLoadingDictionary(false); // Signal that the dictionary is ready
+        };
+        loadData();
+    }, [])
 
     useEffect(() => {
         draggingTileRef.current = draggingTile;
@@ -231,6 +241,7 @@ export default function Game() {
 
     const initializeGame = useCallback(() => {
         // If there's a valid saved state for today passed down as a prop, load it.
+        // Fetch the dictionary when the game starts
         if (savedDailyState) {
             try {
                 setGrid(savedDailyState.grid);
@@ -318,8 +329,11 @@ export default function Game() {
     }, [savedDailyState]);
 
     useEffect(() => {
-        initializeGame();
-    }, [initializeGame]);
+        // Only initialize the game board AFTER the dictionary is loaded.
+        if (!isLoadingDictionary) {
+            initializeGame();
+        }
+    }, [isLoadingDictionary, initializeGame]);
 
     useEffect(() => {
         // If the game is already over, do nothing. Don't start a timer.
@@ -348,6 +362,12 @@ export default function Game() {
     }, [isGameOver]);
 
     const checkForWords = useCallback((currentGrid: (PlacedTile | null)[][]) => {
+
+        if (!dictionary) {
+            console.log("Dictionary not loaded yet, skipping word check.");
+            return;
+        }
+
         let newTotalLengths = 0;
         const allValidTilesMap = new Map<number, PlacedTile>();
         const wordToTilesMap = new Map<string, PlacedTile[]>();
@@ -399,6 +419,7 @@ export default function Game() {
                 allValidTiles: allValidTilesMap,
                 basePoints: newBasePoints,
                 totalLengths: newTotalLengths,
+                dictionary: dictionary!, // Add the dictionary property here
             };
             dailyRules.forEach(rule => {
                 const { bonus, contributingTileIds, achievementCount } = rule.apply(ruleContext);
@@ -434,7 +455,7 @@ export default function Game() {
             }
         }
         setGrid(newGrid);
-    }, [dailyRules]);
+    }, [dailyRules, dictionary]);
 
     const startDrag = (
         e: React.MouseEvent | React.TouchEvent,
@@ -730,6 +751,9 @@ export default function Game() {
         return `${minutes}:${secs < 10 ? '0' : ''}${secs}`;
     }
 
+    // if (isLoadingDictionary) {
+    //     return <div className="text-center p-10 text-xl">Loading Dictionary...</div>;
+    // }
     const RuleColours = ['#22d3ee', '#d946ef', '#facc15']; // Cyan, Magenta, Yellow
 
     return (
@@ -802,7 +826,7 @@ export default function Game() {
                 <div ref={gridContainerRef} className="flex-grow w-full">
                     <div
                         ref={gameBoardRef}
-                        className="relative bg-green-900 border-y-4 lg:border-4 border-black mx-auto"// mx-auto centers it if there's extra space
+                        className="relative bg-green-900 border-y-4 lg:border-4 border-black mx-auto lg:mx-0"// mx-auto centers it if there's extra space
                         // Use the dynamic tileSize from state for sizing
                         style={{
                             width: GridWidth * tileSize,
