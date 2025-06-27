@@ -99,19 +99,6 @@ export default function HomePage() {
   return (
     <PlayerStatsContext.Provider value={contextValue}>
       <div className="w-full">
-        <div className="text-center mb-4">
-          {/* Make font size responsive */}
-          <div className="max-w-4xl mx-auto px-4">
-            <h1 className="text-3xl sm:text-4xl font-bold">Scrabdle - The daily anagram making game</h1>
-            <WelcomeMessage />
-            <p className="text-lg text-gray-600 mt-2">
-              Drag tiles from your hand to the grid to form words. Adapt your strategy to the daily rules and compete for a high score.
-            </p>
-            <p className="text-md text-gray-500 mt-1">
-              (Not affiliated with similarly-named anagram games).
-            </p>
-          </div>
-        </div>
         <div className="
           w-full                          
           lg:max-w-7xl                    // On large screens, set a max-width

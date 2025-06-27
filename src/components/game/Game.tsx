@@ -6,6 +6,7 @@ import GameOverModal from './GameOverModal';
 import { getDictionary, WordData } from '@/data/dictionaryService';
 import { Rule, RuleCategories } from '@/data/rules';
 import { PlayerStatsContext, PlayerStats, SavedDailyState } from '@/context/PlayerStatsContext';
+import PreGameModal from './PreGameModal';
 
 function mulberry32(seed: number) {
     return function () {
@@ -15,6 +16,10 @@ function mulberry32(seed: number) {
         return ((t ^ t >>> 14) >>> 0) / 4284967296;
     }
 }
+//Things left to do:
+//fix word count system so it doesnt work if two valid words are next to each other.
+//work on the points system
+//make a ton more rules
 
 interface TileData {
     id: number;
@@ -85,11 +90,11 @@ export default function Game() {
     const [metRuleCounts, setMetRuleCounts] = useState<Map<string, number>>(new Map());
     const [finalScore, setFinalScore] = useState(0);
     const [timeLeft, setTimeLeft] = useState(60 * 5)
-    const [isGameOver, setIsGameOver] = useState(false);
     const [isScoreSubmitted, setIsScoreSubmitted] = useState(false);
     const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
     const [dictionary, setDictionary] = useState<Map<string, WordData> | null>(null);
     const [isLoadingDictionary, setIsLoadingDictionary] = useState(true);
+    const [gameStatus, setGameStatus] = useState<'pregame' | 'playing' | 'over'>('pregame');
 
     const [draggingTile, setDraggingTile] = useState<DraggingTile | null>(null);
     const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
@@ -132,11 +137,14 @@ export default function Game() {
         }
     }, []);
 
+    const handleStartGame = () => {
+        // This function is called by the "Play" or "Continue" button.
+        setGameStatus('playing');
+    };
+
     useEffect(() => {
         // We only want this effect to run when the game is over.
-        if (!isGameOver) {
-            return;
-        }
+        if (gameStatus !== 'over') return;
 
         // Use the ref to ensure we only ever submit the score ONCE.
         if (hasSubmittedScore.current) {
@@ -205,7 +213,7 @@ export default function Game() {
 
         submitScores();
 
-    }, [isGameOver, playerStats, finalScore, timeLeft, updateStats]);
+    }, [gameStatus, playerStats, finalScore, timeLeft, updateStats]);
 
     useEffect(() => {
         const container = gridContainerRef.current;
@@ -235,56 +243,57 @@ export default function Game() {
         const gameState = {
             grid, hand, tileBag, basePoints, totalLengths, finalScore,
             bonusPoints, dailyRules, metRuleCounts: Array.from(metRuleCounts.entries()),
-            timeLeft, isGameOver,
+            timeLeft, isGameOver: gameStatus === 'over',
         };
 
         saveDailyGameState(gameState);
 
-    }, [grid, hand, tileBag, timeLeft, isGameOver, finalScore, saveDailyGameState]);
+    }, [grid, hand, tileBag, timeLeft, gameStatus, finalScore, saveDailyGameState]);
 
     const initializeGame = useCallback(() => {
-        // If there's a valid saved state for today passed down as a prop, load it.
-        // Fetch the dictionary when the game starts
+        // --- Path 1: A saved game for today exists ---
         if (savedDailyState) {
             try {
+                // Load all common data from the saved state first
                 setGrid(savedDailyState.grid);
                 setHand(savedDailyState.hand);
-                setTileBag(savedDailyState.tileBag);
+                setTileBag(savedDailyState.tileBag || []); // Fallback for old saves
                 setBasePoints(savedDailyState.basePoints);
                 setTotalLengths(savedDailyState.totalLengths);
                 setFinalScore(savedDailyState.finalScore);
-                setTimeLeft(savedDailyState.timeLeft);
-                setIsGameOver(savedDailyState.isGameOver);
                 setBonusPoints(savedDailyState.bonusPoints || 0);
                 setDailyRules(savedDailyState.dailyRules || []);
                 setMetRuleCounts(new Map(savedDailyState.metRuleCounts || []));
-                isInitialized.current = true;
-                // Rehydrate rules from IDs if loaded from saved state
-                if (savedDailyState.dailyRules) {
-                    const allRules: Rule[] = RuleCategories.flatMap(cat => cat.rules);
-                    const hydratedRules = savedDailyState.dailyRules.map((savedRule: any) => {
-                        // Try to find the rule by id
-                        return allRules.find(r => r.id === savedRule.id) || savedRule;
-                    });
-                    setDailyRules(hydratedRules);
+
+                // --- THIS IS THE CRITICAL LOGIC ---
+                // Now, decide the game status based on the loaded data
+                if (savedDailyState.isGameOver) {
+                    setGameStatus('over');
+                    setTimeLeft(savedDailyState.timeLeft || 0);
                 } else {
-                    setDailyRules([]);
+                    setGameStatus('pregame');
+                    setTimeLeft(savedDailyState.timeLeft || 0);
                 }
-                setMetRuleCounts(new Map(savedDailyState.metRuleCounts || []));
+
                 isInitialized.current = true;
-                return; // Exit here, we are done initializing.
+                return; // Exit here. We are done.
             } catch (error) {
                 console.error("Failed to load passed-in saved state, starting fresh.", error);
             }
         }
 
-        setIsGameOver(false);
+        // --- Path 2: No saved game exists, start fresh ---
+        // This code only runs if the `if (savedDailyState)` block was false.
+
+        // Set the initial status for a new game
+        setGameStatus('pregame');
+        console.log("Starting a new game with fresh state.");
         setBasePoints(0);
         setBonusPoints(0);
         setTotalLengths(0);
         setFinalScore(0);
         setMetRuleCounts(new Map());
-        setTimeLeft(60 * 5);
+        setTimeLeft(0);
 
         const today = new Date();
         const seed = today.setHours(0, 0, 0, 0);
@@ -329,6 +338,7 @@ export default function Game() {
         );
         setGrid(emptyGrid);
         isInitialized.current = true;
+
     }, [savedDailyState]);
 
     useEffect(() => {
@@ -339,30 +349,23 @@ export default function Game() {
     }, [isLoadingDictionary, initializeGame]);
 
     useEffect(() => {
-        // If the game is already over, do nothing. Don't start a timer.
-        if (isGameOver) {
+        // Only run the timer if the status is 'playing'.
+        if (gameStatus !== 'playing') {
             return;
         }
 
-        // If the game is not over, set up the interval.
+        // Set up the interval that runs every second.
         const timerId = setInterval(() => {
-            setTimeLeft(prevTime => {
-                // When the timer is about to hit zero, end the game.
-                if (prevTime <= 1) {
-                    setIsGameOver(true);
-                    return 0;
-                }
-                // Otherwise, just count down.
-                return prevTime - 1;
-            });
+            // Use the functional update form to increment the time.
+            setTimeLeft(prevTime => prevTime + 1);
         }, 1000);
 
         // The cleanup function will clear the interval when the component
-        // unmounts or when isGameOver becomes true.
+        // unmounts or when gameStatus changes (e.g., to 'over').
         return () => {
             clearInterval(timerId);
         };
-    }, [isGameOver]);
+    }, [gameStatus]);
 
     const checkForWords = useCallback((currentGrid: (PlacedTile | null)[][]) => {
 
@@ -465,7 +468,7 @@ export default function Game() {
         tile: TileData,
         origin: DraggingTile['origin']
     ) => {
-        if (isGameOver) return;
+        if (gameStatus == 'over') return;
 
 
         const coords = getEventPageCoordinates(e.nativeEvent);
@@ -721,15 +724,11 @@ export default function Game() {
 
     const handleDoneClick = useCallback(() => {
         // Prevent action if the game is already over
-        if (isGameOver) return;
-
-        // Run a final check for words to update the score to its final state
+        if (gameStatus !== 'playing') return; // Check gameStatus now
         checkForWords(grid);
+        setGameStatus('over');
 
-        // End the game
-        setIsGameOver(true);
-
-    }, [draggingTile, grid, hand, checkForWords, tileSize]);
+    }, [draggingTile, grid, hand, checkForWords, tileSize, gameStatus]);
 
     useEffect(() => {
         // Add listeners for both mouse and touch events
@@ -772,7 +771,7 @@ export default function Game() {
                     <span className="text-xl sm:text-2xl text-yellow-400">{finalScore}</span>
                 </div>
                 <div className="text-xl sm:text-2xl font-mono bg-black px-2 sm:px-4 py-2 rounded-lg ml-2">
-                    {isGameOver ? "Time's Up!" : formatTime(timeLeft)}
+                    {gameStatus == 'over' ? "Time's Up!" : formatTime(timeLeft)}
                 </div>
             </div>
 
@@ -901,7 +900,7 @@ export default function Game() {
                             );
                         })}
                     </div>
-                    {!isGameOver && (
+                    {gameStatus !== 'over' && (
                         <button
                             onClick={handleDoneClick}
                             className="w-full py-3 bg-green-600 hover:bg-green-500 rounded-lg text-white font-bold text-xl transition-colors mt-auto"
@@ -911,6 +910,13 @@ export default function Game() {
                     )}
                 </div>
             </div>
+            {gameStatus === 'pregame' && (
+                <PreGameModal
+                    playerStats={playerStats ?? null}
+                    savedDailyState={savedDailyState}
+                    onStartGame={handleStartGame}
+                />
+            )}
 
             {/* Dragging Tile */}
             {draggingTile && (
@@ -940,7 +946,7 @@ export default function Game() {
                 </div>
             )}
 
-            {isGameOver && (
+            {gameStatus === 'over' && (
                 <GameOverModal score={finalScore} isScoreSubmitted={isScoreSubmitted} />
             )}
         </div>
