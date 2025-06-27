@@ -29,6 +29,8 @@ export interface PlayerStatsContextType {
   stats: PlayerStats | null;
   updateStats: (newStats: PlayerStats) => void;
   saveDailyGameState: (gameState: any) => void;
+  isScoreSubmitted: boolean;
+  setIsScoreSubmitted: (isSubmitted: boolean) => void;
 }
 
 // Create the context with a default that matches the new shape

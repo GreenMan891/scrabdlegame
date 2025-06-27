@@ -12,10 +12,10 @@ function formatRank(rank: number) {
 }
 
 function formatTime(seconds: number) {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    const ms = Math.round((seconds - Math.floor(seconds)) * 100);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.round((seconds - Math.floor(seconds)) * 100);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
 }
 
 // --- Data Structures ---
@@ -38,9 +38,16 @@ export default function Leaderboard() {
   const [isLoading, setIsLoading] = useState(true);
   const context = useContext(PlayerStatsContext);
   const currentPlayerId = context?.stats?.username;
+  const isScoreSubmitted = context?.isScoreSubmitted;
 
   useEffect(() => {
     if (!currentPlayerId) return;
+
+    if (!currentPlayerId || !isScoreSubmitted) {
+      // Set loading to true initially if the score isn't submitted yet
+      setIsLoading(true);
+      return;
+    }
 
     const fetchLeaderboard = async () => {
       try {
@@ -57,7 +64,7 @@ export default function Leaderboard() {
     };
 
     fetchLeaderboard();
-  }, [currentPlayerId]);
+  }, [currentPlayerId, isScoreSubmitted]);
 
   if (isLoading) {
     return <p className="text-center text-gray-400 p-4">Loading leaderboard...</p>;
@@ -92,14 +99,15 @@ export default function Leaderboard() {
         </thead>
         <tbody>
           {topScores.map((entry, index) => renderRow(index + 1, entry, entry.playerId === currentPlayerId))}
-          
+
           {/* If player is not in top 10, show their rank separately */}
           {playerRankData && (
             <>
               <tr><td colSpan={4} className="text-center py-2">...</td></tr>
               {renderRow(
                 playerRankData.rank,
-                { playerId: playerRankData.rank, score: playerRankData.score, timeTaken: playerRankData.timeTaken },
+                // Pass the correct player ID from context, not the rank
+                { playerId: Number(currentPlayerId) || 0, score: playerRankData.score, timeTaken: playerRankData.timeTaken },
                 true
               )}
             </>

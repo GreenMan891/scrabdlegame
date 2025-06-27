@@ -3,58 +3,52 @@ import prisma from '@/lib/prisma';
 
 export async function GET(request: NextRequest) {
   try {
-    const todayStr = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
-    
-    // Get the current player's ID from the query parameters, e.g., /api/leaderboard?playerId=1235
+    const todayStr = new Date().toISOString().slice(0, 10);
     const searchParams = request.nextUrl.searchParams;
     const currentPlayerId = parseInt(searchParams.get('playerId') || '0', 10);
 
-    // --- Fetch Top 10 Scores ---
-    const topScores = await prisma.dailyScore.findMany({
+    // --- STEP 1: Fetch ALL of today's scores, sorted correctly ---
+    // This is more efficient than multiple queries.
+    const allScores = await prisma.dailyScore.findMany({
       where: { date: todayStr },
       orderBy: [
         { score: 'desc' },
         { timeTaken: 'asc' },
       ],
-      take: 10,
+      // We select only the fields we need.
+      select: {
+        playerId: true,
+        score: true,
+        timeTaken: true,
+      },
     });
 
-    // --- Find Current Player's Rank ---
+    // --- STEP 2: Process the results in JavaScript ---
+
+    // The top 10 scores are simply the first 10 items in the sorted list.
+    const topScores = allScores.slice(0, 10);
+
     let playerRankData = null;
-    const isPlayerInTop10 = topScores.some(s => s.playerId === currentPlayerId);
 
-    // If the player is not in the top 10 and we have a valid ID, find their specific rank.
-    if (!isPlayerInTop10 && currentPlayerId > 0) {
-      // Get all scores for today to determine the rank
-      const allScores = await prisma.dailyScore.findMany({
-        where: { date: todayStr },
-        select: { playerId: true, score: true, timeTaken: true },
-        orderBy: [
-          { score: 'desc' },
-          { timeTaken: 'asc' },
-        ],
-      });
-      
-      const rank = allScores.findIndex(s => s.playerId === currentPlayerId);
+    // Find the index of the current player in the full sorted list.
+    const playerIndex = allScores.findIndex(s => s.playerId === currentPlayerId);
 
-      // findIndex returns -1 if not found
-      if (rank !== -1) {
-        playerRankData = {
-          rank: rank + 1, // Add 1 because findIndex is 0-based
-          score: allScores[rank].score,
-          timeTaken: allScores[rank].timeTaken,
-        };
-      }
+    // If the player is found (index is not -1) and they are NOT in the top 10 (index is 10 or greater)
+    if (playerIndex !== -1 && playerIndex >= 10) {
+      playerRankData = {
+        rank: playerIndex + 1, // Rank is index + 1
+        ...allScores[playerIndex], // Spread the score and timeTaken from the found entry
+      };
     }
 
-    // Return all the data needed by the frontend
+    // --- STEP 3: Return the structured data ---
     return NextResponse.json({
       topScores,
-      playerRankData,
+      playerRankData, // This will be null if the player is in the top 10 or not found
     });
 
-  } catch (error) {
-    console.error('Failed to fetch leaderboard:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+  } catch (error) { 
+  console.error('Failed to fetch leaderboard:', error);
+  return new NextResponse('Internal Server Error', { status: 500 });
   }
 }

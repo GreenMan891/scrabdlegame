@@ -86,6 +86,7 @@ export default function Game() {
     const [finalScore, setFinalScore] = useState(0);
     const [timeLeft, setTimeLeft] = useState(60 * 5)
     const [isGameOver, setIsGameOver] = useState(false);
+    const [isScoreSubmitted, setIsScoreSubmitted] = useState(false);
     const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
     const [dictionary, setDictionary] = useState<Map<string, WordData> | null>(null);
     const [isLoadingDictionary, setIsLoadingDictionary] = useState(true);
@@ -190,8 +191,10 @@ export default function Game() {
                         }),
                     });
                 }
-
-                console.log("Scores successfully submitted.");
+                if (setIsScoreSubmitted) {
+                    setIsScoreSubmitted(true);
+                }
+                console.log("Scores successfully submitted and state updated.");
 
             } catch (error) {
                 console.error("Failed to submit scores to server:", error);
@@ -202,7 +205,7 @@ export default function Game() {
 
         submitScores();
 
-    }, [isGameOver, playerStats, finalScore, timeLeft, updateStats]);
+    }, [isGameOver, playerStats, finalScore, timeLeft, updateStats, setIsScoreSubmitted]);
 
     useEffect(() => {
         const container = gridContainerRef.current;
@@ -938,7 +941,7 @@ export default function Game() {
             )}
 
             {isGameOver && (
-                <GameOverModal score={finalScore} />
+                <GameOverModal score={finalScore} isScoreSubmitted={isScoreSubmitted} />
             )}
         </div>
     );
