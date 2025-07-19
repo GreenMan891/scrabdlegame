@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Game from "@/components/game/Game";
 import { PlayerStatsContext, PlayerStats, PlayerStatsContextType, SavedDailyState } from '@/context/PlayerStatsContext';
 import WelcomeMessage from '@/components/WelcomeMessage';
@@ -12,6 +12,7 @@ export default function HomePage() {
   const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null);
   const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
 
   // This useEffect loads or creates the stats ONCE when the homepage loads.
   useEffect(() => {
@@ -56,6 +57,11 @@ export default function HomePage() {
           const dailyData = JSON.parse(savedDailyGameJSON);
           if (dailyData.saveDate === todayStr) {
             setSavedDailyState(dailyData.gameState);
+          } else {
+            // If the save is from a previous day, DELETE IT.
+            console.log("Stale daily save found. Deleting it.");
+            localStorage.removeItem(DAILY_GAME_STATE_KEY);
+            // setSavedDailyState will remain null, forcing a fresh game.
           }
         }
 
@@ -96,7 +102,7 @@ export default function HomePage() {
     updateStats,
     saveDailyGameState,
   };
-  return (
+return (
     <PlayerStatsContext.Provider value={contextValue}>
       <div className="w-full">
         <div className="

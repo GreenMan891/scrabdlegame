@@ -3,14 +3,17 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
 import Tile from './Tile';
 import GameOverModal from './GameOverModal';
-import { getDictionary, WordData } from '@/data/dictionaryService';
-import { Rule, RuleCategories } from '@/data/rules';
+import { initializeDictionary, dictionary, WordData } from '@/data/dictionaryService';
+import ScoreAnimator from './ScoreAnimator';
+import { BasePointRules, AnyRule, skillMultiplierRules, connectorRules, WordContext, ConnectionContext, DescriptionContext, RuleApplicationResult } from '@/data/rules';
 import { PlayerStatsContext, PlayerStats, SavedDailyState } from '@/context/PlayerStatsContext';
 import PreGameModal from './PreGameModal';
+import Tooltip from '../ui/Tooltip';
+import { allThemes, ThemeData, allTypes, TypeData } from '@/data/themesTypes';
 
 function mulberry32(seed: number) {
     return function () {
-        let t = seed += 0x6D2B79F5;
+        let t = seed += 0x6D2B79F4;
         t = Math.imul(t ^ t >>> 15, t | 1);
         t ^= t + Math.imul(t ^ t >>> 7, t | 61);
         return ((t ^ t >>> 14) >>> 0) / 4284967296;
@@ -46,7 +49,7 @@ interface DraggingTile {
 
 const GridWidth = 12;
 const GridHeight = 12;
-const HandSlots = 24;
+const HandSlots = 28;
 
 // how many of each tile are in the bag
 const TileDistribution = {
@@ -57,6 +60,10 @@ const TileDistribution = {
 const TileValues: { [key: string]: number } = {
     A: 1, E: 1, I: 1, O: 1, U: 1, L: 1, N: 1, S: 1, T: 1, R: 1, D: 2, G: 2, B: 3, C: 3, M: 3, P: 3,
     F: 4, H: 4, V: 4, W: 4, Y: 4, K: 5, J: 8, X: 8, Q: 10, Z: 10
+}
+
+interface GameProps {
+    gameContentWrapperRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 function getEventPageCoordinates(e: MouseEvent | TouchEvent): { x: number; y: number } | null {
@@ -73,6 +80,21 @@ function getEventPageCoordinates(e: MouseEvent | TouchEvent): { x: number; y: nu
     }
     return null;
 }
+function getEventClientCoordinates(e: MouseEvent | TouchEvent): { x: number; y: number } | null {
+    // For touch events, clientX/Y is on the touch object
+    if ('touches' in e && e.touches.length > 0) {
+        return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+    if ('changedTouches' in e && e.changedTouches.length > 0) {
+        return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    }
+    // For mouse events, clientX/Y is directly on the event object
+    if ('clientX' in e) {
+        return { x: e.clientX, y: e.clientY };
+    }
+    return null;
+}
+
 export default function Game() {
 
     const context = useContext(PlayerStatsContext);
@@ -86,19 +108,30 @@ export default function Game() {
     const [basePoints, setBasePoints] = useState(0);
     const [totalLengths, setTotalLengths] = useState(0);
     const [bonusPoints, setBonusPoints] = useState(0);
-    const [dailyRules, setDailyRules] = useState<Rule[]>([]);
+    const [dailyRules, setDailyRules] = useState<AnyRule[]>([]);
     const [metRuleCounts, setMetRuleCounts] = useState<Map<string, number>>(new Map());
     const [finalScore, setFinalScore] = useState(0);
     const [timeLeft, setTimeLeft] = useState(60 * 5)
     const [isScoreSubmitted, setIsScoreSubmitted] = useState(false);
     const [savedDailyState, setSavedDailyState] = useState<SavedDailyState | null>(null);
-    const [dictionary, setDictionary] = useState<Map<string, WordData> | null>(null);
-    const [isLoadingDictionary, setIsLoadingDictionary] = useState(true);
-    const [gameStatus, setGameStatus] = useState<'pregame' | 'playing' | 'over'>('pregame');
+    //const [dictionary, setDictionary] = useState<Map<string, WordData> | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [gameStatus, setGameStatus] = useState<'pregame' | 'playing' | 'scoring' | 'over'>('pregame');
+    const [liveLetterPoints, setLiveLetterPoints] = useState(0);
+    const [liveLengthMultiplier, setLiveLengthMultiplier] = useState(1.0);
+
+    // Animation-specific state
+    const [isScoring, setIsScoring] = useState(false); // To control the animation loop
+    const [scoringQueue, setScoringQueue] = useState<any[]>([]);
+    const [currentlyScoringWord, setCurrentlyScoringWord] = useState<string | null>(null);
+    const [currentCalculation, setCurrentCalculation] = useState("");
+    const [animatedTotalScore, setAnimatedTotalScore] = useState(0);
 
     const [draggingTile, setDraggingTile] = useState<DraggingTile | null>(null);
     const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
     const draggingTileRef = useRef<DraggingTile | null>(null);
+
+    const [bonusLetterData, setBonusLetterData] = useState<{ letter: string; value: number } | null>(null);
 
     const [tileSize, setTileSize] = useState(50);
 
@@ -107,35 +140,212 @@ export default function Game() {
 
     const isInitialized = useRef(false);
     const hasSubmittedScore = useRef(false);
+    const finalWordMapRef = useRef<Map<string, PlacedTile[]>>(new Map());
+
+    const wordDetailsMapRef = useRef(new Map());
+
+    const [themeOfTheDay, setThemeOfTheDay] = useState<ThemeData | null>(null);
+    const [typeOfTheDay, setTypeOfTheDay] = useState<TypeData | null>(null);
+    // const wordDetailsMapRef = useRef<Map<string, {
+    //     baseScore: number;
+    //     lengthMultiplier: number;
+    //     skillMultiplier: number;
+    //     tiles: PlacedTile[];
+    // }>>(new Map());
+
+    const [scoringBaseScore, setScoringBaseScore] = useState<number>(0);
+    const [scoringMultScore, setScoringMultScore] = useState<number>(1);
 
     // console.log('[RENDER] Component rendering.', {
     //     isDragging: !!draggingTile,
     //     dragPosition: dragPosition
     // });
 
+    // useEffect(() => {
+    //     const loadApp = async () => {
+    //         await initializeDictionary();
+    //         // After the dictionary is loaded, we can proceed.
+    //         setIsLoading(false);
+    //     };
+    //     loadApp();
+    // }, []);
+
     useEffect(() => {
-        const loadData = async () => {
-            const dict = await getDictionary();
-            setDictionary(dict);
-            setIsLoadingDictionary(false); // Signal that the dictionary is ready
+        const loadAndInitialize = async () => {
+            console.log('[INIT] Starting application load...');
+            await initializeDictionary();
+            console.log('[INIT] Dictionary initialized.');
+            //setIsLoading(false);
+
+            const savedJSON = localStorage.getItem('dailyWordGameState');
+            const todayStr = new Date().toISOString().slice(0, 10);
+            let loadedState: SavedDailyState | null = null;
+
+            if (savedJSON) {
+                const data = JSON.parse(savedJSON);
+                if (data.saveDate === todayStr) {
+                    loadedState = data.gameState;
+                    console.log('[INIT] Found valid save data for today.');
+                    setSavedDailyState(loadedState);
+                }
+            }
+
+            // --- THIS IS THE CORE CHANGE ---
+            // The initializeGame function now TAKES the loaded state and RETURNS the initial state.
+            const initialState = initializeGame(loadedState);
+
+            // Now we set all the state at once.
+            setGrid(initialState.grid);
+            setHand(initialState.hand);
+            setTileBag(initialState.tileBag);
+            setBasePoints(initialState.basePoints);
+            setTotalLengths(initialState.totalLengths);
+            setFinalScore(initialState.finalScore);
+            setBonusPoints(initialState.bonusPoints);
+            setDailyRules(initialState.dailyRules); // This will now be correct
+            setBonusLetterData(initialState.bonusLetterData);
+            setMetRuleCounts(initialState.metRuleCounts);
+            setTimeLeft(initialState.timeLeft);
+            setGameStatus(initialState.isGameOver ? 'over' : 'pregame');
+            setThemeOfTheDay(initialState.themeOfTheDay);
+            setTypeOfTheDay(initialState.typeOfTheDay);
+
+            isInitialized.current = true;
+            setIsLoading(false);
+            console.log('[INIT] Initialization complete.');
         };
-        loadData();
-    }, [])
+
+        loadAndInitialize();
+    }, []);
+
+    const initializeGame = (savedState: SavedDailyState | null) => {
+        const today = new Date();
+        const seed = today.setHours(0, 0, 0, 0);
+        const seededRandom = mulberry32(seed);
+        if (savedState) {
+            console.log('[INIT HELPER] Hydrating from saved state.');
+            const allPossibleDailyRules: AnyRule[] = [...BasePointRules, ...skillMultiplierRules, ...connectorRules];
+
+            // 2. Rebuild the dailyRules array by finding the full rule object for each saved ID.
+            const hydratedRules = (savedState.dailyRuleIds || [])
+                .map(ruleId => allPossibleDailyRules.find(r => r.id === ruleId))
+                .filter((rule): rule is AnyRule => !!rule); // This filters out any undefined results safely
+
+            if (savedState.themeOfTheDay) {
+                setThemeOfTheDay(savedState.themeOfTheDay);
+            }
+            if (savedState.typeOfTheDay) {
+                setTypeOfTheDay(savedState.typeOfTheDay);
+            }
+            // const validTilesInHand = savedState?.hand.filter(t => t !== null);
+            // console.log('[INIT HELPER] Valid tiles in hand:', validTilesInHand.length);
+            // let bonusLetterData: { letter: string; value: number } | null = null;
+            // if (validTilesInHand.length > 0) {
+            //     const randomTile = validTilesInHand[Math.floor(seededRandom() * validTilesInHand.length)];
+            //     bonusLetterData = { letter: randomTile.letter, value: randomTile.value };
+            // }
+            return {
+                ...savedState,
+                dailyRules: hydratedRules,
+                metRuleCounts: new Map(savedState.metRuleCounts || []),
+            };
+
+        }
+
+
+
+        // --- Path 2: No saved state, create a fresh game state object ---
+        console.log('[INIT HELPER] Creating fresh game state.');
+
+
+        const bag: TileData[] = [];
+        let idCounter = 0;
+        for (const [letter, count] of Object.entries(TileDistribution)) {
+            for (let i = 0; i < count; i++) {
+                bag.push({ id: idCounter++, letter, value: TileValues[letter] });
+            }
+        }
+        //shuffle bag
+        for (let i = bag.length - 1; i > 0; i--) {
+            const j = Math.floor(seededRandom() * (i + 1));
+            [bag[i], bag[j]] = [bag[j], bag[i]];
+        }
+
+        const initialHand = new Array(HandSlots).fill(null);
+        for (let i = 0; i < HandSlots; i++) {
+            if (bag.length > 0) {
+                initialHand[i] = bag.pop()!;
+            }
+        }
+
+        const randomThemeIndex = Math.floor(seededRandom() * allThemes.length);
+        const dailyTheme = allThemes[randomThemeIndex];
+        setThemeOfTheDay(dailyTheme);
+
+        const randomTypeIndex = Math.floor(seededRandom() * allTypes.length);
+        const dailyType = allTypes[randomTypeIndex];
+        setTypeOfTheDay(dailyType);
+
+        const validTilesInHand = initialHand.filter(t => t !== null);
+        console.log('[INIT HELPER] Valid tiles in hand2:', validTilesInHand.length);
+        let bonusLetterData: { letter: string; value: number } | null = null;
+        if (validTilesInHand.length > 0) {
+            const randomTile = validTilesInHand[Math.floor(seededRandom() * validTilesInHand.length)];
+            bonusLetterData = { letter: randomTile.letter, value: randomTile.value };
+        }
+        setHand(initialHand);
+        setTileBag(bag);
+
+        // Always select one rule from each category: base, skill, connector
+        // Pick a base rule, but if it's "base_ends_in_s", ensure there's an "S" in the hand
+        let baseRule: AnyRule;
+        let attempts = 0;
+        do {
+            baseRule = BasePointRules[Math.floor(seededRandom() * BasePointRules.length)];
+            // Now that initialHand is already created, just check it directly
+            const hasS = initialHand.some(tile => tile && tile.letter === 'S');
+            if (baseRule.id !== 'base_ends_in_s') break;
+            if (hasS) break;
+            attempts++;
+        } while (attempts < 10);
+        const skillRule = skillMultiplierRules[Math.floor(seededRandom() * skillMultiplierRules.length)];
+        const connectorRule = connectorRules[Math.floor(seededRandom() * connectorRules.length)];
+
+        const selectedRules = [baseRule, skillRule, connectorRule];
+
+        console.log('[INIT HELPER] Selected daily rules:', selectedRules.map(r => r.id));
+
+        setDailyRules(selectedRules);
+
+        //create grid
+        const emptyGrid = Array.from({ length: GridHeight }, () =>
+            Array(GridWidth).fill(null)
+        );
+        setGrid(emptyGrid);
+
+        // Return a complete initial state object
+        return {
+            grid: emptyGrid,
+            hand: initialHand,
+            tileBag: bag,
+            basePoints: 0,
+            totalLengths: 0,
+            finalScore: 0,
+            bonusPoints: 0,
+            dailyRules: selectedRules,
+            metRuleCounts: new Map<string, number>(),
+            timeLeft: 0,
+            isGameOver: false,
+            bonusLetterData: bonusLetterData,
+            dailyRuleIds: selectedRules.map(r => r.id),
+            themeOfTheDay: dailyTheme,
+            typeOfTheDay: dailyType,
+        };
+    };
 
     useEffect(() => {
         draggingTileRef.current = draggingTile;
     }, [draggingTile]);
-
-    useEffect(() => {
-        const savedJSON = localStorage.getItem('dailyWordGameState');
-        const todayStr = new Date().toISOString().slice(0, 10);
-        if (savedJSON) {
-            const data = JSON.parse(savedJSON);
-            if (data.saveDate === todayStr) {
-                setSavedDailyState(data.gameState);
-            }
-        }
-    }, []);
 
     const handleStartGame = () => {
         // This function is called by the "Play" or "Continue" button.
@@ -163,6 +373,8 @@ export default function Game() {
 
             // Mark as submitted immediately to prevent race conditions.
             hasSubmittedScore.current = true;
+            //ISSUE WITH LOADING IN THINGS. WHEN WE LOAD THE BONUS LETTER RULE, THE LETTER IS SET INITIALLY BUT IS FORGOTTEN WHEN WE RELOAD THE GAME
+            //ALSO THE GAME DIDNT RESET THE NEXT DAY
 
             try {
                 const todayStr = new Date().toISOString().slice(0, 10);
@@ -184,7 +396,7 @@ export default function Game() {
                     body: JSON.stringify({
                         playerId: playerStats.username,
                         score: finalScore,
-                        timeTaken: (60 * 5) - timeLeft,
+                        timeTaken: timeLeft,
                     }),
                 });
 
@@ -219,134 +431,47 @@ export default function Game() {
         const container = gridContainerRef.current;
         if (!container) return;
 
-        // Use a ResizeObserver to automatically detect when the container's size changes.
-        // This is more efficient than listening to the whole window.
         const resizeObserver = new ResizeObserver(entries => {
-            // We only have one entry, which is our grid container
             const entry = entries[0];
             if (entry) {
-                const width = entry.contentRect.width;
-                // Calculate the new tile size based on container width and update state
-                setTileSize(width / GridWidth);
+                // VVVV THIS IS THE CORE FIX VVVV
+                // 1. Get both the width AND height of the container.
+                const { width, height } = entry.contentRect;
+
+                // 2. Calculate the maximum possible tile size based on each dimension.
+                const tileSizeBasedOnWidth = width / GridWidth;
+                const tileSizeBasedOnHeight = height / GridHeight;
+
+                // 3. Set the tile size to the SMALLER of the two calculations.
+                // This guarantees the grid will never be wider or taller than its container.
+                setTileSize(Math.min(tileSizeBasedOnWidth, tileSizeBasedOnHeight));
             }
         });
 
         resizeObserver.observe(container);
 
-        // Cleanup function to stop observing when the component unmounts
         return () => resizeObserver.disconnect();
     }, []);
+
 
     useEffect(() => {
         if (!isInitialized.current || !saveDailyGameState) return;
 
-        const gameState = {
+        const gameState: SavedDailyState = {
             grid, hand, tileBag, basePoints, totalLengths, finalScore,
-            bonusPoints, dailyRules, metRuleCounts: Array.from(metRuleCounts.entries()),
-            timeLeft, isGameOver: gameStatus === 'over',
+            bonusPoints,
+            dailyRuleIds: dailyRules.map(rule => rule.id), // This will now have data
+            metRuleCounts: Array.from(metRuleCounts.entries()),
+            timeLeft, bonusLetterData: bonusLetterData,
+            isGameOver: gameStatus === 'over', themeOfTheDay: themeOfTheDay, typeOfTheDay: typeOfTheDay,
         };
 
         saveDailyGameState(gameState);
+    }, [
+        grid, hand, tileBag, timeLeft, gameStatus, finalScore, saveDailyGameState,
+        basePoints, bonusPoints, dailyRules, metRuleCounts, totalLengths, themeOfTheDay, typeOfTheDay
+    ]);
 
-    }, [grid, hand, tileBag, timeLeft, gameStatus, finalScore, saveDailyGameState]);
-
-    const initializeGame = useCallback(() => {
-        // --- Path 1: A saved game for today exists ---
-        if (savedDailyState) {
-            try {
-                // Load all common data from the saved state first
-                setGrid(savedDailyState.grid);
-                setHand(savedDailyState.hand);
-                setTileBag(savedDailyState.tileBag || []); // Fallback for old saves
-                setBasePoints(savedDailyState.basePoints);
-                setTotalLengths(savedDailyState.totalLengths);
-                setFinalScore(savedDailyState.finalScore);
-                setBonusPoints(savedDailyState.bonusPoints || 0);
-                setDailyRules(savedDailyState.dailyRules || []);
-                setMetRuleCounts(new Map(savedDailyState.metRuleCounts || []));
-
-                // --- THIS IS THE CRITICAL LOGIC ---
-                // Now, decide the game status based on the loaded data
-                if (savedDailyState.isGameOver) {
-                    setGameStatus('over');
-                    setTimeLeft(savedDailyState.timeLeft || 0);
-                } else {
-                    setGameStatus('pregame');
-                    setTimeLeft(savedDailyState.timeLeft || 0);
-                }
-
-                isInitialized.current = true;
-                return; // Exit here. We are done.
-            } catch (error) {
-                console.error("Failed to load passed-in saved state, starting fresh.", error);
-            }
-        }
-
-        // --- Path 2: No saved game exists, start fresh ---
-        // This code only runs if the `if (savedDailyState)` block was false.
-
-        // Set the initial status for a new game
-        setGameStatus('pregame');
-        console.log("Starting a new game with fresh state.");
-        setBasePoints(0);
-        setBonusPoints(0);
-        setTotalLengths(0);
-        setFinalScore(0);
-        setMetRuleCounts(new Map());
-        setTimeLeft(0);
-
-        const today = new Date();
-        const seed = today.setHours(0, 0, 0, 0);
-        const seededRandom = mulberry32(seed);
-
-        const selectedRules: Rule[] = [];
-        const shuffledCategories = [...RuleCategories].sort(() => seededRandom() - 0.5);
-        for (let i = 0; i < 3 && i < shuffledCategories.length; i++) {
-            const category = shuffledCategories[i];
-            if (category.rules.length > 0) {
-                const ruleIndex = Math.floor(seededRandom() * category.rules.length);
-                selectedRules.push(category.rules[ruleIndex]);
-            }
-        }
-        setDailyRules(selectedRules);
-
-        const bag: TileData[] = [];
-        let idCounter = 0;
-        for (const [letter, count] of Object.entries(TileDistribution)) {
-            for (let i = 0; i < count; i++) {
-                bag.push({ id: idCounter++, letter, value: TileValues[letter] });
-            }
-        }
-        //shuffle bag
-        for (let i = bag.length - 1; i > 0; i--) {
-            const j = Math.floor(seededRandom() * (i + 1));
-            [bag[i], bag[j]] = [bag[j], bag[i]];
-        }
-
-        const initialHand = new Array(HandSlots).fill(null);
-        for (let i = 0; i < HandSlots; i++) {
-            if (bag.length > 0) {
-                initialHand[i] = bag.pop()!;
-            }
-        }
-        setHand(initialHand);
-        setTileBag(bag);
-
-        //create grid
-        const emptyGrid = Array.from({ length: GridHeight }, () =>
-            Array(GridWidth).fill(null)
-        );
-        setGrid(emptyGrid);
-        isInitialized.current = true;
-
-    }, [savedDailyState]);
-
-    useEffect(() => {
-        // Only initialize the game board AFTER the dictionary is loaded.
-        if (!isLoadingDictionary) {
-            initializeGame();
-        }
-    }, [isLoadingDictionary, initializeGame]);
 
     useEffect(() => {
         // Only run the timer if the status is 'playing'.
@@ -367,25 +492,28 @@ export default function Game() {
         };
     }, [gameStatus]);
 
-    const checkForWords = useCallback((currentGrid: (PlacedTile | null)[][]) => {
+    const getLengthMultiplier = (length: number): number => {
+        if (length >= 8) return 3.0;
+        if (length === 7) return 2.5;
+        if (length === 6) return 2.0;
+        if (length === 5) return 1.75;
+        if (length === 4) return 1.5;
+        if (length === 3) return 1.25;
+        return 1.0; // 4 or fewer letters get no multiplier bonus
+    };
 
-        if (!dictionary) {
-            console.log("Dictionary not loaded yet, skipping word check.");
-            return;
-        }
+    const calculateLiveScore = useCallback((currentGrid: (PlacedTile | null)[][]) => {
+        // This function should not run if the dictionary isn't ready or if the game isn't in 'playing' state.
+        if (!dictionary || gameStatus !== 'playing') return;
 
-        let newTotalLengths = 0;
-        const allValidTilesMap = new Map<number, PlacedTile>();
         const wordToTilesMap = new Map<string, PlacedTile[]>();
 
+        // We use the same checkLine helper to find all valid words.
         const checkLine = (line: (PlacedTile | null)[]) => {
             let currentWord = "";
             let currentTiles: PlacedTile[] = [];
-
             const processCurrentWord = () => {
                 if (currentWord.length > 2 && dictionary.has(currentWord.toLowerCase())) {
-                    newTotalLengths += currentWord.length;
-                    currentTiles.forEach(tile => allValidTilesMap.set(tile.id, tile));
                     wordToTilesMap.set(currentWord, [...currentTiles]);
                 }
                 currentWord = "";
@@ -402,54 +530,187 @@ export default function Game() {
             processCurrentWord();
         };
 
-        for (let y = 0; y < GridHeight; y++) {
-            checkLine(currentGrid[y]);
-        }
-        for (let x = 0; x < GridWidth; x++) {
-            const column = currentGrid.map((row: any[]) => row[x]);
-            checkLine(column);
+        for (let y = 0; y < GridHeight; y++) { checkLine(currentGrid[y]); }
+        for (let x = 0; x < GridWidth; x++) { checkLine(currentGrid.map(row => row[x])); }
+
+        // --- Live Calculation Logic ---
+        let currentLetterPoints = 0;
+        let longestWordLength = 0;
+
+        // Iterate through the found words to calculate the live score components.
+        for (const [word, tiles] of wordToTilesMap.entries()) {
+            // Sum up the letter points of all valid words.
+            currentLetterPoints += tiles.reduce((sum, tile) => sum + tile.value, 0);
+
+            // Keep track of the length of the single longest word found.
+            if (word.length > longestWordLength) {
+                longestWordLength = word.length;
+            }
         }
 
-        let newBasePoints = 0;
-        for (const tile of allValidTilesMap.values()) {
-            newBasePoints += tile.value;
-        }
+        // Update the state with the new live values.
+        setLiveLetterPoints(currentLetterPoints);
+        setLiveLengthMultiplier(getLengthMultiplier(longestWordLength));
 
-        const newMetRuleCounts = new Map<string, number>();
-        let newBonusPoints = 0;
-        const tileToRuleIdsMap = new Map<number, Set<string>>();
-        if (dailyRules.length > 0) {
-            const ruleContext = {
-                validWords: Array.from(wordToTilesMap.keys()),
-                wordToTilesMap,
-                allValidTiles: allValidTilesMap,
-                basePoints: newBasePoints,
-                totalLengths: newTotalLengths,
-                dictionary: dictionary!, // Add the dictionary property here
-            };
-            dailyRules.forEach(rule => {
-                const { bonus, contributingTileIds, achievementCount } = rule.apply(ruleContext);
-                newBonusPoints += bonus;
-                if (achievementCount > 0) {
-                    newMetRuleCounts.set(rule.id, achievementCount);
+    }, [dictionary, gameStatus]);
+
+    const checkForWords = useCallback((currentGrid: (PlacedTile | null)[][]) => {
+        if (!dictionary) return;
+
+        calculateLiveScore(currentGrid);
+
+        // VVVV INITIALIZE THE MAP HERE VVVV
+        const allValidTilesMap = new Map<number, PlacedTile>();
+        const wordToTilesMap = new Map<string, PlacedTile[]>();
+
+        const checkLine = (line: (PlacedTile | null)[]) => {
+            let currentWord = "";
+            let currentTiles: PlacedTile[] = [];
+            const processCurrentWord = () => {
+                if (currentWord.length > 2 && dictionary.has(currentWord.toLowerCase())) {
+                    wordToTilesMap.set(currentWord, [...currentTiles]);
+                    currentTiles.forEach(tile => allValidTilesMap.set(tile.id, tile));
                 }
-                contributingTileIds.forEach(tileId => {
-                    if (!tileToRuleIdsMap.has(tileId)) {
-                        tileToRuleIdsMap.set(tileId, new Set());
-                    }
-                    tileToRuleIdsMap.get(tileId)!.add(rule.id);
-                });
+                currentWord = "";
+                currentTiles = [];
+            };
+            for (const tile of line) {
+                if (tile) {
+                    currentWord += tile.letter;
+                    currentTiles.push(tile);
+                } else {
+                    processCurrentWord();
+                }
+            }
+            processCurrentWord();
+        };
+
+        for (let y = 0; y < GridHeight; y++) { checkLine(currentGrid[y]); }
+        for (let x = 0; x < GridWidth; x++) { checkLine(currentGrid.map(row => row[x])); }
+
+        // --- Scoring Engine ---
+        const wordDetailsMap = new Map<string, {
+            baseScore: number;
+            lengthMultiplier: number;
+            skillMultiplier: number;
+            tiles: PlacedTile[];
+        }>();
+        const tileToRuleIdsMap = new Map<number, Set<string>>();
+        const newMetRuleCounts = new Map<string, number>();
+
+        //debug: check if we have any valid words and the themes and types associated with them
+        // Print out the themes and types of all found words
+        console.log('[DEBUG] Found valid words:', Array.from(wordToTilesMap.keys()));
+        for (const [word, tiles] of wordToTilesMap.entries()) {
+            const wordData = dictionary.get(word.toLowerCase());
+            if (wordData) {
+                console.log(`[DEBUG] Word: ${word}, Themes: ${wordData.theme?.join(', ') || 'None'}, Types: ${wordData.type?.join(', ') || 'None'}`);
+            } else {
+                console.log(`[DEBUG] Word: ${word}, Themes: None, Types: None`);
+            }
+            console.log('[DEBUG] Theme of the day:', themeOfTheDay?.name || 'None');
+            console.log('[DEBUG] Type of the day:', typeOfTheDay?.name || 'None');
+        }
+
+
+        // -- PASS 1: Calculate individual potential for each word and apply non-connector rules --
+        for (const [word, tiles] of wordToTilesMap.entries()) {
+            const letterScore = tiles.reduce((sum, tile) => sum + tile.value, 0);
+            const wordContext: WordContext = { word, tiles, bonusLetterData: bonusLetterData ?? undefined, themeOfTheDay, typeOfTheDay };
+
+            let flatBonus = 0;
+            let skillMultiplierPool = 1.0;
+
+            dailyRules.forEach(rule => {
+                let result: RuleApplicationResult | undefined;
+                if (rule.type === 'base') {
+                    result = rule.apply(wordContext);
+                    flatBonus += result.bonus;
+                } else if (rule.type === 'skill') {
+                    result = rule.apply(wordContext);
+                    skillMultiplierPool += result.bonus;
+                }
+
+                if (result && result.achievementCount > 0) {
+                    const currentCount = newMetRuleCounts.get(rule.id) || 0;
+                    newMetRuleCounts.set(rule.id, currentCount + result.achievementCount);
+                    result.contributingTileIds.forEach(id => {
+                        if (!tileToRuleIdsMap.has(id)) tileToRuleIdsMap.set(id, new Set());
+                        tileToRuleIdsMap.get(id)!.add(rule.id);
+                    });
+                }
+            });
+
+            const lengthMultiplier = getLengthMultiplier(word.length);
+            wordDetailsMap.set(word, {
+                baseScore: letterScore + flatBonus,
+                lengthMultiplier: lengthMultiplier,
+                skillMultiplier: skillMultiplierPool,
+                tiles: tiles,
             });
         }
 
-        const newFinalScore = (newBasePoints * newTotalLengths) + newBonusPoints;
+        // -- PASS 2: Find combo groups and calculate final score --
+        const connectionContext: ConnectionContext = {
+            wordToTilesMap,
+            dictionary,
+            dailyRules,
+            wordScores: new Map(), // This is vestigial, can be removed from the type later
+        };
+        const activeConnectorRules = dailyRules.filter(r => r.type === 'connector');
+        const allConnectedGroups = groupConnectedWords(wordToTilesMap, activeConnectorRules, connectionContext);
+        const wordsInACombo = new Set(allConnectedGroups.flat());
 
-        setBasePoints(newBasePoints);
-        setTotalLengths(newTotalLengths);
-        setBonusPoints(newBonusPoints);
-        setFinalScore(newFinalScore);
+        let finalTurnScore = 0;
+
+        // a) Score the connected groups
+        for (const group of allConnectedGroups) {
+            let combinedBaseScore = 0;
+            let combinedMultiplier = 1.0;
+
+            // Find the connector rule that created this connection to apply its color
+            // (This assumes one connector rule per day for simplicity, can be expanded)
+            const connectorRule = activeConnectorRules[0];
+
+            for (const word of group) {
+                const details = wordDetailsMap.get(word);
+                if (details) {
+                    combinedBaseScore += details.baseScore;
+                    combinedMultiplier *= details.lengthMultiplier * details.skillMultiplier;
+
+                    // Apply highlighting for this combo
+                    if (connectorRule) {
+                        details.tiles.forEach(tile => {
+                            if (!tileToRuleIdsMap.has(tile.id)) tileToRuleIdsMap.set(tile.id, new Set());
+                            tileToRuleIdsMap.get(tile.id)!.add(connectorRule.id);
+                        });
+                    }
+                }
+            }
+            finalTurnScore += combinedBaseScore * combinedMultiplier;
+            // Update achievement count for the connector rule
+            if (connectorRule) {
+                const currentCount = newMetRuleCounts.get(connectorRule.id) || 0;
+                newMetRuleCounts.set(connectorRule.id, currentCount + 1);
+            }
+        }
+
+        // b) Score the remaining, unconnected words
+        for (const [word, details] of wordDetailsMap.entries()) {
+            if (!wordsInACombo.has(word)) {
+                finalTurnScore += details.baseScore * details.lengthMultiplier * details.skillMultiplier;
+            }
+        }
+
+        // --- Update State ---
+        // We only update the display totals here; the real score is finalTurnScore
+        const totalLetterPoints = Array.from(wordToTilesMap.values()).flat().reduce((sum, tile) => sum + tile.value, 0);
+        setBasePoints(totalLetterPoints);
+
+        setFinalScore(Math.round(finalTurnScore));
         setMetRuleCounts(newMetRuleCounts);
 
+        // Update the grid with all highlighting and found status
         const newGrid = JSON.parse(JSON.stringify(currentGrid));
         for (let y = 0; y < GridHeight; y++) {
             for (let x = 0; x < GridWidth; x++) {
@@ -461,7 +722,297 @@ export default function Game() {
             }
         }
         setGrid(newGrid);
-    }, [dailyRules, dictionary]);
+
+    }, [dailyRules, dictionary, bonusLetterData, getLengthMultiplier, calculateLiveScore, themeOfTheDay, typeOfTheDay]);
+
+    function findAllValidWords(currentGrid: (PlacedTile | null)[][]) {
+        calculateLiveScore(currentGrid);
+
+        const allValidTilesMap = new Map<number, PlacedTile>();
+        const wordToTilesMap = new Map<string, PlacedTile[]>();
+
+
+        // Step 1: Find all valid words and their tiles (this logic is unchanged)
+        const checkLine = (line: (PlacedTile | null)[]) => {
+            let currentWord = "";
+            let currentTiles: PlacedTile[] = [];
+
+            const processCurrentWord = () => {
+                // Check if the built-up word is valid according to game rules (e.g., length)
+                // and exists in the dictionary.
+                if (currentWord.length > 2 && dictionary.has(currentWord.toLowerCase())) {
+                    // If valid, add it to our map for this turn's scoring.
+                    wordToTilesMap.set(currentWord, [...currentTiles]);
+                    // Also add its tiles to a separate map to easily identify all valid tiles later.
+                    currentTiles.forEach(tile => allValidTilesMap.set(tile.id, tile));
+                }
+                // Always reset after processing to start looking for the next word.
+                currentWord = "";
+                currentTiles = [];
+            };
+
+            // Iterate through each cell in the provided line (a row or column).
+            for (const tile of line) {
+                if (tile) {
+                    // If there's a tile, append its letter to the current word string.
+                    currentWord += tile.letter;
+                    currentTiles.push(tile);
+                } else {
+                    // If we hit an empty cell, it's a word boundary. Process what we have.
+                    processCurrentWord();
+                }
+            }
+            // After the loop finishes, process any word that was at the very end of the line.
+            processCurrentWord();
+        };
+        for (let y = 0; y < GridHeight; y++) { checkLine(currentGrid[y]); }
+        for (let x = 0; x < GridWidth; x++) { checkLine(currentGrid.map(row => row[x])); }
+        return wordToTilesMap;
+    }
+
+    const groupConnectedWords = (
+        wordToTilesMap: Map<string, PlacedTile[]>,
+        activeConnectorRules: AnyRule[],
+        connectionContext: ConnectionContext
+    ): string[][] => {
+        const words = Array.from(wordToTilesMap.keys());
+        if (words.length < 2) return [];
+
+        // Step 1: Build the adjacency list from ALL rule results.
+        const adjacencyList = new Map<string, Set<string>>();
+        for (const word of words) {
+            adjacencyList.set(word, new Set());
+        }
+
+        // Apply each active connector rule to the whole board state.
+        for (const rule of activeConnectorRules) {
+            if (rule.type === 'connector') {
+                // The rule's `apply` function now returns ALL pairs it finds.
+                const result = rule.apply(connectionContext);
+                for (const group of result.connectedGroups) {
+                    // For each pair found by the rule (e.g., [WIND, DUNE]),
+                    // add a two-way link to our adjacency list.
+                    const [wordA, wordB] = group;
+                    adjacencyList.get(wordA)!.add(wordB);
+                    adjacencyList.get(wordB)!.add(wordA);
+                }
+            }
+        }
+
+        // Step 2: Traverse the graph (DFS). This logic is unchanged and now works correctly.
+        const allGroups: string[][] = [];
+        const visited = new Set<string>();
+
+        for (const word of words) {
+            if (!visited.has(word)) {
+                const currentGroup: string[] = [];
+                const stack = [word];
+                visited.add(word);
+
+                while (stack.length > 0) {
+                    const currentWord = stack.pop()!;
+                    currentGroup.push(currentWord);
+                    const neighbors = adjacencyList.get(currentWord) || new Set();
+                    for (const neighbor of neighbors) {
+                        if (!visited.has(neighbor)) {
+                            visited.add(neighbor);
+                            stack.push(neighbor);
+                        }
+                    }
+                }
+                if (currentGroup.length > 1) {
+                    allGroups.push(currentGroup);
+                }
+            }
+        }
+        return allGroups;
+    };
+
+
+
+    useEffect(() => {
+        if (gameStatus !== 'scoring' || !dictionary) {
+            return;
+        }
+
+        console.log('[SCORING] Game status is "scoring". Building animation queue...');
+
+        // 1. Find all valid words on the board.
+        const wordToTilesMap = findAllValidWords(grid);
+        finalWordMapRef.current = wordToTilesMap;
+
+        // 2. Pre-calculate the individual scoring details for EVERY word.
+        const wordDetailsMap = new Map<string, {
+            baseScore: number;
+            lengthMultiplier: number;
+            skillMultiplier: number;
+            tiles: PlacedTile[];
+        }>();
+
+        // VVVV THIS IS THE "EXISTING LOGIC" IMPLEMENTED FULLY VVVV
+        for (const [word, tiles] of wordToTilesMap.entries()) {
+            const letterScore = tiles.reduce((sum, tile) => sum + tile.value, 0);
+            const wordContext: WordContext = { word, tiles, bonusLetterData: bonusLetterData ?? undefined, themeOfTheDay, typeOfTheDay };
+            let flatBonus = 0;
+            dailyRules.forEach(rule => {
+                if (rule.type === 'base') {
+                    // We only care about the bonus points here, not the other returned values.
+                    flatBonus += rule.apply(wordContext).bonus;
+                }
+            });
+
+            let skillMultiplierPool = 1.0;
+            dailyRules.forEach(rule => {
+                if (rule.type === 'skill') {
+                    // The 'bonus' property for skill rules is the multiplier value (e.g., 0.5)
+                    skillMultiplierPool += rule.apply(wordContext).bonus;
+                }
+            });
+
+            const lengthMultiplier = getLengthMultiplier(word.length);
+
+            // Store all the calculated components for this word in our map.
+            wordDetailsMap.set(word, {
+                baseScore: letterScore + flatBonus,
+                lengthMultiplier: lengthMultiplier,
+                skillMultiplier: skillMultiplierPool,
+                tiles: tiles
+            });
+        }
+        // ^^^^ END OF "EXISTING LOGIC" BLOCK ^^^^
+
+        // Store this map in the ref for the animation function to use.
+        wordDetailsMapRef.current = wordDetailsMap;
+
+
+        const connectionContext: ConnectionContext = {
+            wordToTilesMap,
+            dictionary,
+            dailyRules,
+            wordScores: new Map(), // This property can be removed from the interface later
+        };
+
+        const activeConnectorRules = dailyRules.filter(r => r.type === 'connector');
+
+        // Call our powerful new helper function.
+        const allConnectedGroups = groupConnectedWords(
+            wordToTilesMap,
+            activeConnectorRules,
+            connectionContext
+        );
+
+        // Create a flat set of all words that are part of any combo for easy lookup.
+        const wordsInACombo = new Set(allConnectedGroups.flat());
+        // ===================================================================
+
+
+        // 4. Build the final animation queue. (This part is unchanged and now works correctly).
+        const queue: any[] = [];
+        for (const group of allConnectedGroups) {
+            queue.push({ type: 'score_combo_group', group: group });
+        }
+        for (const word of wordToTilesMap.keys()) {
+            if (!wordsInACombo.has(word)) {
+                queue.push({ type: 'score_single_word', word: word });
+            }
+        }
+        queue.push({ type: 'finish_scoring' });
+
+        console.log(`[SCORING] Queue created with ${queue.length - 1} scoring steps.`);
+        setScoringQueue(queue);
+
+    }, [gameStatus, grid, dictionary, dailyRules, bonusLetterData]);
+    // Helper function to calculate the full score for one word
+    const calculateFullScoreForWord = (word: string, tiles: PlacedTile[]) => {
+        const wordContext: WordContext = { word, tiles, themeOfTheDay, typeOfTheDay, bonusLetterData: bonusLetterData ?? undefined };
+        const letterScore = tiles.reduce((sum, tile) => sum + tile.value, 0);
+
+        let flatBonus = 0;
+        dailyRules.forEach(rule => {
+            if (rule.type === 'base') flatBonus += rule.apply(wordContext).bonus;
+        });
+
+        let skillMultiplierPool = 1.0;
+        dailyRules.forEach(rule => {
+            if (rule.type === 'skill') skillMultiplierPool += rule.apply(wordContext).bonus;
+        });
+
+        const lengthMultiplier = getLengthMultiplier(word.length);
+        const baseScore = letterScore + flatBonus;
+        // Expose baseScore and multScore as global variables for use in JSX
+        setScoringBaseScore(baseScore);
+        const multScore = lengthMultiplier * skillMultiplierPool;
+        setScoringMultScore(multScore);
+        const total = (letterScore + flatBonus) * (lengthMultiplier * skillMultiplierPool);
+
+        return { letterScore, flatBonus, lengthMultiplier, skillMultiplierPool, total, baseScore, multScore };
+    };
+
+
+    const processNextInQueue = () => {
+        if (scoringQueue.length === 0) return;
+        const nextEvent = scoringQueue[0];
+        console.log('[SCORING] Processing event:', nextEvent);
+
+        setTimeout(() => {
+            let scoreToAdd = 0;
+            let calculationString = "";
+
+            if (nextEvent.type === 'score_combo_group') {
+                const group = nextEvent.group;
+
+                // --- Logic for a COMBO ---
+                let combinedBaseScore = 0;
+                let combinedMultiplier = 1.0;
+
+                // Highlight all words in the group at once
+                setCurrentlyScoringWord(group.join(' + '));
+
+                for (const word of group) {
+                    const details = wordDetailsMapRef.current.get(word); // Assuming wordDetailsMap is accessible
+                    if (details) {
+                        combinedBaseScore += details.baseScore;
+                        combinedMultiplier *= details.lengthMultiplier * details.skillMultiplier;
+                    }
+                }
+                scoreToAdd = Math.round(combinedBaseScore * combinedMultiplier);
+                calculationString = `COMBO: (${combinedBaseScore}) x ${combinedMultiplier.toFixed(2)} = ${scoreToAdd}`;
+
+            } else if (nextEvent.type === 'score_single_word') {
+                const word = nextEvent.word;
+                const details = wordDetailsMapRef.current.get(word); // Assuming wordDetailsMap is accessible
+
+                if (details) {
+                    // --- Logic for a SINGLE word ---
+                    setCurrentlyScoringWord(word);
+                    scoreToAdd = Math.round(details.baseScore * details.lengthMultiplier * details.skillMultiplier);
+                    calculationString = `(${details.baseScore}) x ${details.lengthMultiplier.toFixed(2)} x ${details.skillMultiplier.toFixed(2)} = ${scoreToAdd}`;
+                }
+            } else if (nextEvent.type === 'finish_scoring') {
+                console.log('[SCORING] All steps complete.');
+                setGameStatus('over');
+                return;
+            }
+
+            // Update the UI
+            setCurrentCalculation(calculationString);
+            setAnimatedTotalScore(prev => prev + scoreToAdd);
+
+            // Schedule the un-highlighting and next step
+            setTimeout(() => {
+                setCurrentlyScoringWord(null);
+                setCurrentCalculation("");
+                setScoringQueue(prevQueue => prevQueue.slice(1));
+            }, 1500); // Wait 1.5s to show the result before moving on
+
+        }, 750); // 750ms delay to start the next scoring step
+    };
+    useEffect(() => {
+        // Only start processing if we are in the scoring phase and the queue has items.
+        if (gameStatus === 'scoring' && scoringQueue.length > 0) {
+            processNextInQueue();
+        }
+    }, [scoringQueue, gameStatus]);
 
     const startDrag = (
         e: React.MouseEvent | React.TouchEvent,
@@ -493,21 +1044,6 @@ export default function Game() {
 
         setDragPosition(newDragPosition);
         setDraggingTile(newDraggingTile);
-
-        // Remove tile from its source visually
-        // if (origin.type === 'grid') {
-        //     setGrid(g => {
-        //         const newG = [...g];
-        //         newG[origin.y][origin.x] = null;
-        //         return newG;
-        //     });
-        // } else {
-        //     setHand(h => {
-        //         const newHand = [...h];
-        //         newHand[origin.index] = null;
-        //         return newHand;
-        //     });
-        // }
     };
 
     const handleDragMove = useCallback((e: MouseEvent | TouchEvent) => {
@@ -523,120 +1059,6 @@ export default function Game() {
             }
         }
     }, []);
-
-    // const handleDragEnd = useCallback((e: MouseEvent | TouchEvent) => {
-    //     if (!draggingTile || !gameBoardRef.current) return;
-
-    //     console.log('[END] handleDragEnd event triggered.');
-    //     const currentDraggingTile = draggingTileRef.current;
-    //     if (!currentDraggingTile) {
-    //         console.log('[END] No tile was being dragged. Cleaning up.');
-    //         setDraggingTile(null); // Ensure state is clean
-    //         return;
-    //     }
-    //     const coords = getEventPageCoordinates(e);
-
-    //     if (!coords) {
-    //         // If for some reason we can't get coordinates, revert the tile.
-    //         if (draggingTile.origin.type === 'grid') {
-    //             const { x, y } = draggingTile.origin;
-    //             setGrid(g => {
-    //                 const newG = g.map(row => [...row]);
-    //                 newG[y][x] = { ...draggingTile.tile, gridX: x, gridY: y, isFound: false };
-    //                 return newG;
-    //             });
-    //         } else {
-    //             const { index } = draggingTile.origin;
-    //             setHand(h => {
-    //                 const newH = h.map(item => item);
-    //                 newH[index] = draggingTile.tile;
-    //                 return newH;
-    //             });
-    //         }
-    //         setDraggingTile(null);
-    //         return;
-    //     }
-
-    //     const boardRect = gameBoardRef.current.getBoundingClientRect();
-
-    //     // VVVV THIS CALCULATION IS NOW CORRECT VVVV
-    //     // It correctly converts the document-relative cursor position
-    //     // to a board-relative position by accounting for scroll offset.
-    //     const dropX = coords.x - (boardRect.left + window.scrollX);
-    //     const dropY = coords.y - (boardRect.top + window.scrollY);
-
-    //     const gridX = Math.floor(dropX / tileSize);
-    //     const gridY = Math.floor(dropY / tileSize);
-
-    //     let placedOrSwapped = false;
-    //     let finalGridState: (PlacedTile | null)[][] | null = null;
-
-    //     // --- NEW LOGIC START ---
-
-    //     // Check if the drop is within the valid grid boundaries
-    //     if (gridX >= 0 && gridX < GridWidth && gridY >= 0 && gridY < GridHeight) {
-    //         const targetTile = grid[gridY][gridX];
-    //         const newGrid = grid.map(row => [...row]); // Create a mutable copy
-
-    //         if (targetTile === null) {
-    //             // --- SCENARIO 1: Dropping on an EMPTY cell ---
-    //             // This is the original placement logic.
-    //             newGrid[gridY][gridX] = { ...draggingTile.tile, gridX, gridY, isFound: false };
-    //             finalGridState = newGrid;
-    //             placedOrSwapped = true;
-
-    //         } else {
-    //             // --- SCENARIO 2: Dropping on an OCCUPIED cell ---
-    //             // Only allow swapping if the dragged tile came from the grid.
-    //             if (draggingTile.origin.type === 'grid') {
-    //                 const originX = draggingTile.origin.x;
-    //                 const originY = draggingTile.origin.y;
-
-    //                 // Perform the swap
-    //                 // 1. Move the target tile to the dragged tile's original spot
-    //                 newGrid[originY][originX] = { ...targetTile, gridX: originX, gridY: originY };
-
-    //                 // 2. Move the dragged tile to the target's spot
-    //                 newGrid[gridY][gridX] = { ...draggingTile.tile, gridX, gridY, isFound: false };
-
-    //                 finalGridState = newGrid;
-    //                 placedOrSwapped = true;
-    //             }
-    //             // If dragged from hand onto an occupied spot, `placedOrSwapped` remains false,
-    //             // and the tile will correctly revert to the hand below.
-    //         }
-    //     }
-
-    //     // --- REVERT LOGIC ---
-    //     // If no successful placement or swap occurred, revert the tile to its origin.
-    //     if (!placedOrSwapped) {
-    //         if (draggingTile.origin.type === 'grid') {
-    //             const { x, y } = draggingTile.origin;
-    //             const newGrid = grid.map(row => [...row]);
-    //             newGrid[y][x] = { ...draggingTile.tile, gridX: x, gridY: y, isFound: false };
-    //             // No word check needed on a revert, so we set the grid directly
-    //             setGrid(newGrid);
-    //         } else {
-    //             const { index } = draggingTile.origin;
-    //             setHand(h => {
-    //                 const newH = [...h];
-    //                 newH[index] = draggingTile.tile;
-    //                 return newH;
-    //             });
-    //         }
-    //     }
-
-    //     // --- FINAL STATE UPDATE ---
-    //     // If a move was successful, update the grid and check for new words.
-    //     if (finalGridState) {
-    //         setGrid(finalGridState);
-    //         checkForWords(finalGridState);
-    //     }
-
-    //     // Reset the dragging state
-    //     console.log('[END] Drag finished. Clearing dragging state.');
-    //     setDraggingTile(null);
-    // }, [draggingTile, grid, hand, checkForWords, tileSize]);
 
     const handleDragEnd = useCallback((e: MouseEvent | TouchEvent) => {
         const currentDraggingTile = draggingTileRef.current;
@@ -722,11 +1144,12 @@ export default function Game() {
 
     }, [grid, hand, tileSize, checkForWords]);
 
+
     const handleDoneClick = useCallback(() => {
         // Prevent action if the game is already over
         if (gameStatus !== 'playing') return; // Check gameStatus now
         checkForWords(grid);
-        setGameStatus('over');
+        setGameStatus('scoring');
 
     }, [draggingTile, grid, hand, checkForWords, tileSize, gameStatus]);
 
@@ -762,13 +1185,24 @@ export default function Game() {
         <div className="w-full flex flex-col bg-transparent text-white rounded-lg select-none">
             {/* Top Row: Score and Timer (Already responsive, no changes) */}
             <div className="w-full flex justify-between items-center mb-4 px-2 sm:px-4 pt-2 sm:pt-4">
-                <div className="text-base sm:text-xl font-bold text-gray-300 bg-green-950 px-2 sm:px-4 py-2 rounded-lg flex flex-wrap items-center">
-                    <span>Points ({basePoints})</span>
-                    <span className="mx-1 sm:mx-2">x</span>
-                    <span>Lengths ({totalLengths}) +</span>
-                    <span className="mx-1 sm:mx-2 text-green-400">Bonus ({bonusPoints})</span>
-                    <span className="mx-1 sm:mx-2">=</span>
-                    <span className="text-xl sm:text-2xl text-yellow-400">{finalScore}</span>
+                <div className="flex-grow">
+                    {gameStatus === 'playing' ? (
+                        <div className="text-base sm:text-xl font-bold text-gray-300 bg-green-950 px-4 py-2 rounded-lg flex items-center justify-center">
+                            <span>Base ({liveLetterPoints})</span>
+                            <span className="mx-2">x</span>
+                            <span>Length ({liveLengthMultiplier.toFixed(2)}x)</span>
+                        </div>
+                    ) : gameStatus === 'scoring' ? (
+                        <ScoreAnimator
+                            currentlyScoringWord={currentlyScoringWord}
+                            currentCalculation={currentCalculation}
+                            animatedTotalScore={animatedTotalScore}
+                        />
+                    ) : (
+                        <div className="text-base sm:text-xl font-bold text-gray-300 bg-green-950 px-4 py-2 rounded-lg flex items-center justify-center">
+                            <span>Final Score: <span className="text-xl sm:text-2xl text-yellow-400">{finalScore}</span></span>
+                        </div>
+                    )}
                 </div>
                 <div className="text-xl sm:text-2xl font-mono bg-black px-2 sm:px-4 py-2 rounded-lg ml-2">
                     {gameStatus == 'over' ? "Time's Up!" : formatTime(timeLeft)}
@@ -783,15 +1217,39 @@ export default function Game() {
                         {dailyRules.map((rule, index) => {
                             // VVVV GET THE COUNT FOR THIS RULE VVVV
                             const count = metRuleCounts.get(rule.id) || 0;
-
+                            const isThemeRule = rule.id === 'skill_daily_theme';
+                            const isTypeRule = rule.id === 'skill_daily_type';
+                            const descriptionText = rule.description({
+                                bonusLetterData: bonusLetterData ?? undefined,
+                                themeOfTheDay: themeOfTheDay ?? undefined,
+                                typeOfTheDay: typeOfTheDay ?? undefined
+                            });
                             return (
                                 <li
                                     key={rule.id}
                                     style={{ backgroundColor: RuleColours[index] + '20', borderColor: RuleColours[index] }}
-                                    className="p-2 rounded-md border-l-4 flex items-center justify-between min-h-[56px]" // min-h for consistent height
+                                    className="p-2 rounded-md border-l-4 flex items-center justify-between min-h-[56px]"
                                 >
-                                    <p className="text-white font-semibold pr-2">{rule.description}</p>
-
+                                    {isThemeRule && themeOfTheDay ? (
+                                        // If it's the theme rule, wrap the description in the Tooltip
+                                        <Tooltip text={`e.g., ${themeOfTheDay.examples.join(', ')}`}>
+                                            <p className="text-white font-semibold pr-2 border-b-2 border-dashed border-gray-500 cursor-help">
+                                                {descriptionText}
+                                            </p>
+                                        </Tooltip>
+                                    ) : isTypeRule && typeOfTheDay ? (
+                                        // Case 2: It's the TYPE rule
+                                        <Tooltip text={`e.g., ${typeOfTheDay.examples.join(', ')}`}>
+                                            <p className="text-white font-semibold pr-2 border-b-2 border-dashed border-gray-500 cursor-help">
+                                                {descriptionText}
+                                            </p>
+                                        </Tooltip>
+                                    ) : (
+                                        // Otherwise, render the description normally
+                                        <p className="text-white font-semibold pr-2">
+                                            {descriptionText}
+                                        </p>
+                                    )}
                                     {/* Checkmark container */}
                                     <div className={`
                             flex flex-wrap items-center justify-end gap-1 transition-opacity duration-500
@@ -825,10 +1283,10 @@ export default function Game() {
             <div className="w-full flex flex-col lg:flex-row gap-4">
 
                 {/* Left Column: Game Board Container */}
-                <div ref={gridContainerRef} className="flex-grow w-full">
+                <div ref={gridContainerRef} className="flex-grow w-full flex items-center justify-center">
                     <div
                         ref={gameBoardRef}
-                        className="relative bg-green-900 border-y-4 lg:border-4 border-black mx-auto lg:mx-0"// mx-auto centers it if there's extra space
+                        className="relative bg-green-900 border-y-5 lg:border-4 border-black lg:mx-0"// mx-auto centers it if there's extra space
                         // Use the dynamic tileSize from state for sizing
                         style={{
                             width: GridWidth * tileSize,
@@ -844,13 +1302,29 @@ export default function Game() {
                                 const isBeingDragged = draggingTile?.origin.type === 'grid' &&
                                     draggingTile.origin.x === x &&
                                     draggingTile.origin.y === y;
+
+                                let isScoringHighlight = false;
+                                if (gameStatus === 'scoring' && currentlyScoringWord && tile) {
+                                    const tilesForScoringWord = finalWordMapRef.current.get(currentlyScoringWord);
+                                    if (tilesForScoringWord?.some(t => t.id === tile.id)) {
+                                        isScoringHighlight = true;
+                                    }
+                                }
+
                                 return (
                                     <div
                                         key={`${x}-${y}`}
                                         className="w-full h-full border border-gray-100/50 flex items-center justify-center"
                                     >
                                         {tile && (
-                                            <div className={isBeingDragged ? 'opacity-0' : 'opacity-100 w-full h-full'}>
+                                            <div
+                                                className={`
+                                                    w-full h-full
+                                                    ${isBeingDragged ? 'opacity-0' : 'opacity-100'}
+                                                    transition-transform duration-300
+                                                    ${isScoringHighlight ? 'scale-120' : 'scale-100'}
+                                                `}
+                                            >
                                                 <Tile
                                                     letter={tile.letter}
                                                     value={tile.value}
@@ -920,6 +1394,21 @@ export default function Game() {
 
             {/* Dragging Tile */}
             {draggingTile && (
+                // We wrap the log in a component-like function to log during render
+                (() => {
+
+                    console.log(`%c[RENDER] Applying Styles:`, 'color: #facc15; font-weight: bold;');
+                    console.log({
+                        position: 'fixed',
+                        left: `${dragPosition.x - draggingTile.offsetX}px`,
+                        top: `${dragPosition.y - draggingTile.offsetY}px`,
+                        width: `${draggingTile.size}px`,
+                        height: `${draggingTile.size}px`,
+                    });
+                    return null;
+                })()
+            )}
+            {draggingTile && (
                 <div
                     className="absolute pointer-events-none"
                     // Use the dynamic tileSize from state here too
@@ -938,7 +1427,7 @@ export default function Game() {
                         isDragging={true}
                         isFound={false}
                         appliedRuleIds={[]}
-                        tileSize={tileSize}
+                        tileSize={draggingTile.size}
                         dailyRules={dailyRules}
                         onMouseDown={() => { }}
                         onTouchStart={() => { }}

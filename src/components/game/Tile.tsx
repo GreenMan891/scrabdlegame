@@ -1,5 +1,5 @@
 import React from 'react';
-import { Rule } from '@/data/rules';
+import { AnyRule } from '@/data/rules';
 
 const RULE_COLORS = ['#22d3ee', '#d946ef', '#facc15'];
 
@@ -8,7 +8,7 @@ interface TileProps {
     value: number;
     isDragging?: boolean;
     isFound?: boolean;
-    dailyRules?: Rule[];
+    dailyRules?: AnyRule[];
     appliedRuleIds?: string[];
     tileSize: number;
     onMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;

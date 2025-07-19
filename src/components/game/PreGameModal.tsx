@@ -19,7 +19,7 @@ export default function PreGameModal({ playerStats, savedDailyState, onStartGame
 
     return (
         // Backdrop
-        <div className="fixed top-0 left-0 w-screen h-screen z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 overflow-y-auto p-4">
             {/* Modal Content */}
             <div className="bg-green-900 text-white p-8 rounded-xl shadow-2xl flex flex-col items-center gap-6 animate-fade-in-up text-center w-11/12 max-w-md">
 

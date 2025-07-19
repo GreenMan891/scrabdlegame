@@ -1,4 +1,6 @@
 import { createContext } from 'react';
+import { AnyRule } from '@/data/rules'; 
+import { ThemeData, TypeData } from '@/data/themesTypes';
 
 export interface PlayerStats {
   username: number;
@@ -17,10 +19,16 @@ export interface SavedDailyState {
   totalLengths: number;
   finalScore: number;
   bonusPoints: number;
-  dailyRules: any[];
+  dailyRuleIds: string[];
+  bonusLetterData: {
+    letter: string;
+    value: number;
+  } | null; // NEW: Bonus letter data
   metRuleCounts: [string, number][]; // This is how a Map gets serialized
   timeLeft: number;
   isGameOver: boolean;
+  themeOfTheDay: ThemeData | null; // NEW: Theme of the day
+  typeOfTheDay: TypeData | null; // NEW: Type of the day
 }
 
 

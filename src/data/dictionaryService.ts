@@ -1,49 +1,39 @@
 // --- Define the types that the rest of the app will use ---
-export type WordType = "adverb" | "adjective" | "verb" | "noun" | "interjections" | "prepositions" | "conjunctions";
-export type WordTheme = "Animals" | "Food" | "Nature" | "Numbers" | "School" | "Emotions" | "Music" | "Body" | "Books" | "Calendar" | "Colours" | "Transportation" | "Technology" | "Weather" | "Sports" | "Clothing" ;
-
+// --- Define the types ---
+//export type WordType = "adverbs" | "adjectives" | "verbs" | "nouns" | "interjections" | "prepositions" | "conjunctions";
+//export type WordTheme = "Animals" | "Food" | "Nature" | "Numbers" | "School" | "Emotions" | "Music" | "Body" | "Books" | "Calendar" | "Colours" | "Transportation" | "Technology" | "Weather" | "Sports" | "Clothing" ;
+export type WordTheme = "Nature" | "Weather" | "Flora" | "Fauna" | "Insects" | "Anatomy" | "Perception" | "Health" | "Food" | "Beverages" | "Clothing" | "Housing" | "Tools" | "Technology" | "Science" | "Mathematics" | "Measurement" | "Energy" | "Materials" | "Shapes" | "Time" | "Space" | "Movement" | "Travel" | "Geography" | "Economy" | "Finance" | "Occupations" | "Law" | "Politics" | "Warfare" | "Spirituality" | "Emotions" | "Personality" | "Relationships" | "Etiquette" | "Culture" | "Language" | "Education" | "Philosophy" | "Literature" | "Art" | "Music" | "Performance" | "Sports" | "Recreation" | "Humor" | "Imagination" | "Mythology" | "Danger" | "Safety" | "Death" | "Growth" | "Aging" | "Beauty" | "Strength" | "Weakness" | "Morality" | "Corruption" | "Conflict" | "Cooperation" | "Size" | "Quantity" | "Change" | "Causality" | "Probability" | "Truth" | "Mystery" | "Hope" | "Freedom" | "Ownership" | "Position" | "Existence" | "Abstraction" | "Objects"
+// export const TYPES = ["noun", "verb", "adjective", "adverb", "pronoun", "determiner", "preposition", "conjunction", "interjection"];
+export type WordType = "noun" | "verb" | "adjective" | "adverb" | "pronoun" | "determiner" | "preposition" | "conjunction" | "interjection";
 export interface WordData {
-  type?: WordType;
-  theme?: WordTheme;
+  theme?: WordTheme[]; // plural, now an array
+  type?: WordType[];   // plural, now an array
 }
 
-// --- THIS IS THE KEY ---
-// We create and export an empty Map. Your rules.ts file will import THIS variable.
+// --- The SINGLE SOURCE OF TRUTH ---
+// This is exported directly. Your rules.ts file will import this.
 export let dictionary: Map<string, WordData> = new Map();
 
-let dictionaryCache: Map<string, WordData> | null = null;
-const DICTIONARY_URL = 'https://pdsx74vla44vq2mf.public.blob.vercel-storage.com/scrabdle-dictionary.json';
-let isFetching = false;
+// --- The Initializer ---
+let hasInitialized = false;
+const DICTIONARY_URL = 'https://pdsx74vla44vq2mf.public.blob.vercel-storage.com/scrabdle-dictionary2-LGI86WUt0K3Q4Cq1as8fhzmcsVMgDg.json';
 
-// This function now returns the dictionary. It no longer mutates a global variable.
-export async function getDictionary(): Promise<Map<string, WordData>> {
-  if (dictionaryCache) {
-    return dictionaryCache;
-  }
+export async function initializeDictionary(): Promise<void> {
+  if (hasInitialized) return;
+  hasInitialized = true;
 
-  isFetching = true;
-  console.log("Initializing dictionary from Vercel Blob...");
-
+  console.log("Initializing global dictionary...");
   try {
     const response = await fetch(DICTIONARY_URL);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch dictionary: ${response.statusText}`);
-    }
-    
+    if (!response.ok) throw new Error("Failed to fetch dictionary");
     const data: [string, WordData][] = await response.json();
-    
-    // VVVV THIS IS THE MAGIC VVVV
-    // We are not returning the map. We are MUTATING the exported `dictionary` variable.
-    // All other files that have imported `dictionary` will now see it populated with data.
-    dictionaryCache = new Map(data);
-    
-    console.log(`Dictionary initialized successfully with ${dictionaryCache.size} words.`);
 
+    // This MUTATES the exported variable. Any file that imported it
+    // will now see the populated data.
+    dictionary = new Map(data);
+
+    console.log(`Global dictionary initialized with ${dictionary.size} words.`);
   } catch (error) {
-    console.error(error);
-    dictionaryCache = new Map();
-  } finally {
-    isFetching = false;
+    console.error("Could not initialize dictionary:", error);
   }
-  return dictionaryCache!;
 }
