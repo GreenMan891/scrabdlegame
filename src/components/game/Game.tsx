@@ -5,7 +5,7 @@ import Tile from './Tile';
 import GameOverModal from './GameOverModal';
 import { initializeDictionary, dictionary, WordData } from '@/data/dictionaryService';
 import ScoreAnimator from './ScoreAnimator';
-import { BasePointRules, AnyRule, skillMultiplierRules, connectorRules, WordContext, ConnectionContext, DescriptionContext, RuleApplicationResult } from '@/data/rules';
+import { BasePointRules, AnyRule, skillMultiplierRules, connectorRules, WordContext, BoardContext, ConnectionContext, DescriptionContext, RuleApplicationResult } from '@/data/rules';
 import { PlayerStatsContext, PlayerStats, SavedDailyState } from '@/context/PlayerStatsContext';
 import PreGameModal from './PreGameModal';
 import Tooltip from '../ui/Tooltip';
@@ -77,20 +77,6 @@ function getEventPageCoordinates(e: MouseEvent | TouchEvent): { x: number; y: nu
     // For mouse events, use pageX/pageY directly
     if ('pageX' in e) {
         return { x: e.pageX, y: e.pageY };
-    }
-    return null;
-}
-function getEventClientCoordinates(e: MouseEvent | TouchEvent): { x: number; y: number } | null {
-    // For touch events, clientX/Y is on the touch object
-    if ('touches' in e && e.touches.length > 0) {
-        return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    }
-    if ('changedTouches' in e && e.changedTouches.length > 0) {
-        return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
-    }
-    // For mouse events, clientX/Y is directly on the event object
-    if ('clientX' in e) {
-        return { x: e.clientX, y: e.clientY };
     }
     return null;
 }
@@ -434,25 +420,26 @@ export default function Game() {
         const resizeObserver = new ResizeObserver(entries => {
             const entry = entries[0];
             if (entry) {
-                // VVVV THIS IS THE CORE FIX VVVV
-                // 1. Get both the width AND height of the container.
                 const { width, height } = entry.contentRect;
 
-                // 2. Calculate the maximum possible tile size based on each dimension.
-                const tileSizeBasedOnWidth = width / GridWidth;
-                const tileSizeBasedOnHeight = height / GridHeight;
-
-                // 3. Set the tile size to the SMALLER of the two calculations.
-                // This guarantees the grid will never be wider or taller than its container.
-                setTileSize(Math.min(tileSizeBasedOnWidth, tileSizeBasedOnHeight));
+                // On large screens (lg breakpoint, 1024px), we are in a flex-row layout.
+                // The grid's width is the primary constraint.
+                if (window.innerWidth >= 1024) {
+                    setTileSize(width / GridWidth);
+                }
+                // On smaller screens, we are in a flex-col layout.
+                // We must ensure the grid fits both horizontally AND vertically.
+                else {
+                    const tileSizeBasedOnWidth = width / GridWidth;
+                    const tileSizeBasedOnHeight = height / GridHeight;
+                    setTileSize(Math.min(tileSizeBasedOnWidth, tileSizeBasedOnHeight));
+                }
             }
         });
 
         resizeObserver.observe(container);
-
         return () => resizeObserver.disconnect();
     }, []);
-
 
     useEffect(() => {
         if (!isInitialized.current || !saveDailyGameState) return;
@@ -557,6 +544,7 @@ export default function Game() {
     const checkForWords = useCallback((currentGrid: (PlacedTile | null)[][]) => {
         if (!dictionary) return;
 
+        // Run the live score calculation for the UI
         calculateLiveScore(currentGrid);
 
         // VVVV INITIALIZE THE MAP HERE VVVV
@@ -588,7 +576,7 @@ export default function Game() {
         for (let y = 0; y < GridHeight; y++) { checkLine(currentGrid[y]); }
         for (let x = 0; x < GridWidth; x++) { checkLine(currentGrid.map(row => row[x])); }
 
-        // --- Scoring Engine ---
+        // --- Scoring Engine Initialization ---
         const wordDetailsMap = new Map<string, {
             baseScore: number;
             lengthMultiplier: number;
@@ -598,35 +586,21 @@ export default function Game() {
         const tileToRuleIdsMap = new Map<number, Set<string>>();
         const newMetRuleCounts = new Map<string, number>();
 
-        //debug: check if we have any valid words and the themes and types associated with them
-        // Print out the themes and types of all found words
-        console.log('[DEBUG] Found valid words:', Array.from(wordToTilesMap.keys()));
-        for (const [word, tiles] of wordToTilesMap.entries()) {
-            const wordData = dictionary.get(word.toLowerCase());
-            if (wordData) {
-                console.log(`[DEBUG] Word: ${word}, Themes: ${wordData.theme?.join(', ') || 'None'}, Types: ${wordData.type?.join(', ') || 'None'}`);
-            } else {
-                console.log(`[DEBUG] Word: ${word}, Themes: None, Types: None`);
-            }
-            console.log('[DEBUG] Theme of the day:', themeOfTheDay?.name || 'None');
-            console.log('[DEBUG] Type of the day:', typeOfTheDay?.name || 'None');
-        }
-
-
-        // -- PASS 1: Calculate individual potential for each word and apply non-connector rules --
+        // --- Pass 1: Calculate PER-WORD bonuses and multipliers ---
         for (const [word, tiles] of wordToTilesMap.entries()) {
             const letterScore = tiles.reduce((sum, tile) => sum + tile.value, 0);
-            const wordContext: WordContext = { word, tiles, bonusLetterData: bonusLetterData ?? undefined, themeOfTheDay, typeOfTheDay };
+            const wordContext: WordContext = { word, tiles, bonusLetterData: bonusLetterData || undefined, themeOfTheDay, typeOfTheDay };
 
-            let flatBonus = 0;
+            let perWordFlatBonus = 0;
             let skillMultiplierPool = 1.0;
 
             dailyRules.forEach(rule => {
                 let result: RuleApplicationResult | undefined;
-                if (rule.type === 'base') {
+                // Apply 'word' scoped rules
+                if (rule.type === 'base' && rule.scope === 'word') {
                     result = rule.apply(wordContext);
-                    flatBonus += result.bonus;
-                } else if (rule.type === 'skill') {
+                    perWordFlatBonus += result.bonus;
+                } else if (rule.type === 'skill') { // Skill rules are always per-word
                     result = rule.apply(wordContext);
                     skillMultiplierPool += result.bonus;
                 }
@@ -642,15 +616,51 @@ export default function Game() {
             });
 
             const lengthMultiplier = getLengthMultiplier(word.length);
+
+            // Store the details WITHOUT board-wide bonuses yet.
             wordDetailsMap.set(word, {
-                baseScore: letterScore + flatBonus,
+                baseScore: letterScore + perWordFlatBonus,
                 lengthMultiplier: lengthMultiplier,
                 skillMultiplier: skillMultiplierPool,
                 tiles: tiles,
             });
+
+            // Update display totals
+            // (Note: This will be adjusted later)
         }
 
-        // -- PASS 2: Find combo groups and calculate final score --
+        // --- Pass 2: Calculate BOARD-WIDE flat bonuses ---
+        const boardContext: BoardContext = {
+            wordToTilesMap,
+            handIsEmpty: hand.every(tile => tile === null),
+        };
+        let totalBoardWideBonus = 0;
+        dailyRules.forEach(rule => {
+            if (rule.type === 'base' && rule.scope === 'board') {
+                const result = rule.apply(boardContext);
+                totalBoardWideBonus += result.bonus;
+
+                // Update counts and highlights for board-wide rules
+                if (result.achievementCount > 0) {
+                    const currentCount = newMetRuleCounts.get(rule.id) || 0;
+                    newMetRuleCounts.set(rule.id, currentCount + result.achievementCount);
+                    result.contributingTileIds.forEach(id => {
+                        if (!tileToRuleIdsMap.has(id)) tileToRuleIdsMap.set(id, new Set());
+                        tileToRuleIdsMap.get(id)!.add(rule.id);
+                    });
+                }
+            }
+        });
+
+        // --- Pass 3: Distribute the board-wide bonus and find COMBO groups ---
+        // For simplicity, we'll distribute the board-wide bonus evenly among all words.
+        const wordCount = wordToTilesMap.size > 0 ? wordToTilesMap.size : 1;
+        const bonusPerWord = totalBoardWideBonus / wordCount;
+
+        // Add the distributed bonus to each word's base score
+        for (const [word, details] of wordDetailsMap.entries()) {
+            details.baseScore += bonusPerWord;
+        }
         const connectionContext: ConnectionContext = {
             wordToTilesMap,
             dictionary,
@@ -1286,7 +1296,7 @@ export default function Game() {
                 <div ref={gridContainerRef} className="flex-grow w-full flex items-center justify-center">
                     <div
                         ref={gameBoardRef}
-                        className="relative bg-green-900 border-y-5 lg:border-4 border-black lg:mx-0"// mx-auto centers it if there's extra space
+                        className="relative bg-green-900 border-y-4 lg:border-4 border-black mx-auto lg:mx-0"// mx-auto centers it if there's extra space
                         // Use the dynamic tileSize from state for sizing
                         style={{
                             width: GridWidth * tileSize,

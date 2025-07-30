@@ -45,6 +45,7 @@ export interface WordContext {
 // ===================================================================
 export interface BoardContext {
     wordToTilesMap: Map<string, PlacedTile[]>; // All valid words on the board
+    handIsEmpty: boolean; // Whether the player's hand is empty
 }
 
 // ===================================================================
@@ -77,8 +78,9 @@ export interface RuleApplicationResult {
 export interface BasePointRule {
     type: 'base';
     id: string;
+    scope: 'word' | 'board';
     description: (context: DescriptionContext) => string; // Use the context object
-    apply: (context: WordContext) => RuleApplicationResult;
+    apply: (context: WordContext | BoardContext) => RuleApplicationResult;
 }
 
 export interface SkillMultiplierRule {
@@ -96,6 +98,7 @@ export type AnyRule = BasePointRule | SkillMultiplierRule | ConnectorRule;
 export const BasePointRules: BasePointRule[] = [
     {
         type: 'base',
+        scope: 'word', // FIX #1: Added scope property
         id: 'base_bonus_letter',
         description: ({ bonusLetterData }) => {
             if (bonusLetterData?.letter) {
@@ -103,9 +106,13 @@ export const BasePointRules: BasePointRule[] = [
             }
             return "+0 points for using the bonus letter (no bonus letter set)";
         },
-        apply: ({ word, tiles, bonusLetterData }) => {
-            if (!bonusLetterData) return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
-            if (word.toUpperCase().includes(bonusLetterData.letter)) {
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('word' in context) { // This checks if it's a WordContext
+                const { word, tiles, bonusLetterData } = context;
+                if (!bonusLetterData || !word.toUpperCase().includes(bonusLetterData.letter)) {
+                    return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+                }
                 const contributingTiles = tiles.filter(t => t.letter === bonusLetterData.letter);
                 return {
                     bonus: 10 * contributingTiles.length,
@@ -118,62 +125,282 @@ export const BasePointRules: BasePointRule[] = [
     },
     {
         type: 'base',
+        scope: 'word', // FIX #1
         id: 'base_double_letters',
         description: () => '+30 points if a word has back-to-back letters (e.g., "BOOK").',
-        apply: ({ word, tiles }) => {
-            if (/(.)\1/i.test(word)) {
-                return { bonus: 30, achievementCount: 1, contributingTileIds: new Set(tiles.map(t => t.id)) };
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('word' in context) {
+                if (/(.)\1/i.test(context.word)) {
+                    return { bonus: 30, achievementCount: 1, contributingTileIds: new Set(context.tiles.map(t => t.id)) };
+                }
             }
             return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
         },
     },
-    // {
-    //     id: 'base_word_length',
-    //     description: () => '+20 points per letter for words between 3 and 7 letters long.',
-    //     apply: ({ word, tiles }) => {
-    //         const len = word.length;
-    //         if (len >= 3 && len <= 7) {
-    //             return len * 20;
-    //         }
-    //         return 0;
-    //     },
-    // },
     {
         type: 'base',
+        scope: 'word', // FIX #1
         id: 'base_all_one_pointers',
         description: () => '+20 points if all letters in a word are worth 1 point.',
-        apply: (context: WordContext) => {
-            if (context.tiles.every(t => t.value === 1)) {
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('word' in context && context.tiles.every(t => t.value === 1)) {
                 return {
                     bonus: 20,
                     achievementCount: 1,
                     contributingTileIds: new Set(context.tiles.map(t => t.id))
                 };
             }
-            return {
-                bonus: 0,
-                achievementCount: 0,
-                contributingTileIds: new Set()
-            };
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
         },
     },
     {
         type: 'base',
+        scope: 'word', // FIX #1
         id: 'base_ends_in_s',
         description: () => '+25 points if a word ends in an "S".',
-        apply: ({ word, tiles }) => {
-            if (word.toUpperCase().endsWith('S')) {
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('word' in context && context.word.toUpperCase().endsWith('S')) {
                 return {
                     bonus: 25,
                     achievementCount: 1,
-                    contributingTileIds: new Set(tiles.map(t => t.id))
+                    contributingTileIds: new Set(context.tiles.map(t => t.id))
                 };
             }
-            return {
-                bonus: 0,
-                achievementCount: 0,
-                contributingTileIds: new Set()
-            };
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+
+    // --- BOARD-WIDE RULES ---
+    {
+        type: 'base',
+        scope: 'board', // FIX #1
+        id: 'base_longest_word',
+        description: () => '+10 points for every letter in the longest word.',
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('wordToTilesMap' in context) {
+                const words = Array.from(context.wordToTilesMap.keys());
+                if (words.length === 0) return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+                const longestWord = words.reduce((a, b) => a.length >= b.length ? a : b);
+                const bonus = longestWord.length * 10;
+                const contributingTiles = context.wordToTilesMap.get(longestWord)!;
+                return { bonus, achievementCount: longestWord.length, contributingTileIds: new Set(contributingTiles.map(t => t.id)) };
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'board', // FIX #1
+        id: 'base_word_count',
+        description: () => '+5 points for every valid word on the board.',
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('wordToTilesMap' in context) {
+                const wordCount = context.wordToTilesMap.size;
+                if (wordCount === 0) return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+                const bonus = wordCount * 5;
+                const allTileIds = Array.from(context.wordToTilesMap.values()).flat().map(t => t.id);
+                return { bonus, achievementCount: wordCount, contributingTileIds: new Set(allTileIds) };
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'board', // FIX #1
+        id: 'base_full_clear',
+        description: () => '+250 points for using every tile from your hand.',
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('handIsEmpty' in context && context.handIsEmpty) {
+                const allTileIds = Array.from(context.wordToTilesMap.values()).flat().map(t => t.id);
+                return { bonus: 250, achievementCount: 1, contributingTileIds: new Set(allTileIds) };
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'board', // FIX #1
+        id: 'base_unique_first_letters',
+        description: () => '+75 points if every word starts with a different letter.',
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('wordToTilesMap' in context) {
+                const words = Array.from(context.wordToTilesMap.keys());
+                if (words.length < 2) return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+                const firstLetters = words.map(w => w.charAt(0).toUpperCase());
+                if (firstLetters.length === new Set(firstLetters).size) {
+                    const allTileIds = Array.from(context.wordToTilesMap.values()).flat().map(t => t.id);
+                    return { bonus: 75, achievementCount: 1, contributingTileIds: new Set(allTileIds) };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'board', // FIX #1
+        id: 'base_all_the_vowels',
+        description: () => "+100 points for using 'A', 'E', 'I', 'O', and 'U' at least once.",
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('wordToTilesMap' in context) {
+                const allLetters = new Set(Array.from(context.wordToTilesMap.values()).flat().map(t => t.letter.toUpperCase()));
+                const vowels = ['A', 'E', 'I', 'O', 'U'];
+                if (vowels.every(v => allLetters.has(v))) {
+                    const allTileIds = Array.from(context.wordToTilesMap.values()).flat().map(t => t.id);
+                    return { bonus: 100, achievementCount: 1, contributingTileIds: new Set(allTileIds) };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'board', // FIX #1
+        id: 'base_rare_letter_bonus',
+        description: () => "+50 points for each 'J', 'Q', 'X', or 'Z' played.",
+        apply: (context: WordContext | BoardContext) => {
+            // FIX #2: Type guard
+            if ('wordToTilesMap' in context) {
+                const rareLetters = ['J', 'Q', 'X', 'Z'];
+                const allTiles = Array.from(context.wordToTilesMap.values()).flat();
+                const contributingTiles = allTiles.filter(t => rareLetters.includes(t.letter.toUpperCase()));
+                if (contributingTiles.length > 0) {
+                    return {
+                        bonus: contributingTiles.length * 50,
+                        achievementCount: contributingTiles.length,
+                        contributingTileIds: new Set(contributingTiles.map(t => t.id))
+                    };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+        {
+        type: 'base',
+        scope: 'word',
+        id: 'base_vowel_ends',
+        description: () => '+10 points for each word that starts and ends with a vowel.',
+        apply: (context: WordContext | BoardContext) => {
+            if ('word' in context) { // Type guard for WordContext
+                const word = context.word.toUpperCase();
+                const vowels = 'AEIOU';
+                if (word.length > 1 && vowels.includes(word[0]) && vowels.includes(word[word.length - 1])) {
+                    return {
+                        bonus: 10,
+                        achievementCount: 1,
+                        contributingTileIds: new Set(context.tiles.map(t => t.id))
+                    };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'word',
+        id: 'base_symmetrical_word',
+        description: () => '+15 points for each word that is a palindrome.',
+        apply: (context: WordContext | BoardContext) => {
+            if ('word' in context) {
+                const isPalindrome = context.word.toLowerCase() === [...context.word.toLowerCase()].reverse().join('');
+                if (context.word.length > 1 && isPalindrome) {
+                    return {
+                        bonus: 15,
+                        achievementCount: 1,
+                        contributingTileIds: new Set(context.tiles.map(t => t.id))
+                    };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'word',
+        id: 'base_three_of_a_kind',
+        description: () => '+20 points for each word with the same letter three times.',
+        apply: (context: WordContext | BoardContext) => {
+            if ('word' in context) {
+                const letterCounts = [...context.word.toUpperCase()].reduce((acc, char) => {
+                    acc[char] = (acc[char] || 0) + 1;
+                    return acc;
+                }, {} as Record<string, number>);
+
+                const hasThreeOfAKind = Object.values(letterCounts).some(count => count >= 3);
+                if (hasThreeOfAKind) {
+                    return {
+                        bonus: 20,
+                        achievementCount: 1,
+                        contributingTileIds: new Set(context.tiles.map(t => t.id))
+                    };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+
+    // --- NEW BOARD-WIDE RULES ---
+    {
+        type: 'base',
+        scope: 'board',
+        id: 'base_numerical_word',
+        description: () => 'Spell a number (1-100) to earn that number in bonus points.',
+        apply: (context: WordContext | BoardContext) => {
+            if ('wordToTilesMap' in context) {
+                // A pre-defined map for number words and their values.
+                const numberWords: Record<string, number> = {
+                    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 
+                    'eight': 8, 'nine': 9, 'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+                    'fourteen': 14, 'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18,
+                    'nineteen': 19, 'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 
+                    'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90, 'hundred': 100
+                };
+                
+                let totalBonus = 0;
+                let achievementCount = 0;
+                const contributingTileIds = new Set<number>();
+                
+                for (const word of context.wordToTilesMap.keys()) {
+                    const value = numberWords[word.toLowerCase()];
+                    if (value) {
+                        totalBonus += value;
+                        achievementCount++;
+                        context.wordToTilesMap.get(word)!.forEach(tile => contributingTileIds.add(tile.id));
+                    }
+                }
+                
+                return {
+                    bonus: totalBonus,
+                    achievementCount: achievementCount,
+                    contributingTileIds: contributingTileIds
+                };
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
+        },
+    },
+    {
+        type: 'base',
+        scope: 'board',
+        id: 'base_no_three_letter_words',
+        description: () => '+50 points if there are no 3-letter words on the board.',
+        apply: (context: WordContext | BoardContext) => {
+            if ('wordToTilesMap' in context) {
+                const words = Array.from(context.wordToTilesMap.keys());
+                const hasThreeLetterWord = words.some(word => word.length === 3);
+
+                if (words.length > 0 && !hasThreeLetterWord) {
+                    const allTileIds = Array.from(context.wordToTilesMap.values()).flat().map(t => t.id);
+                    return { bonus: 50, achievementCount: 1, contributingTileIds: new Set(allTileIds) };
+                }
+            }
+            return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
         },
     },
 ];
