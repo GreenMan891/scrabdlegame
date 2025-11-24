@@ -46,22 +46,22 @@ export const allThemes: ThemeData[] = [
 
 export const allTypes: TypeData[] = [
   {
-    name: 'noun',
+    name: 'nouns',
     multiplier: 2.0,
     examples: ['information', 'community', 'knowledge']
   },
   {
-    name: 'verb',
+    name: 'verbs',
     multiplier: 2.6,
     examples: ['understand', 'continue', 'remember']
   },
   {
-    name: 'adjective',
+    name: 'adjectives',
     multiplier: 3.2,
     examples: ['beautiful', 'important', 'different']
   },
   {
-    name: 'adverb',
+    name: 'adverbs',
     multiplier: 4.5,
     examples: ['carefully', 'later', 'quickly']
   }

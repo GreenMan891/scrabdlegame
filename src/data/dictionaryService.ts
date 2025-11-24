@@ -31,19 +31,21 @@ export type WordTheme =
   | "Beverages"
   | "Art"
   | "Anatomy";
-export type WordType = "noun" | "verb" | "adjective" | "adverb";
+
+// 2. FIX: Changed singular 'verb'/'adjective' to plural to match your JSON
+export type WordType = "nouns" | "verbs" | "adjectives" | "adverbs";
+
 export interface WordData {
-  theme?: WordTheme[]; // plural, now an array
-  type?: WordType[];   // plural, now an array
+  theme?: WordTheme[]; 
+  type?: WordType[];   
 }
 
 // --- The SINGLE SOURCE OF TRUTH ---
-// This is exported directly. Your rules.ts file will import this.
 export let dictionary: Map<string, WordData> = new Map();
 
 // --- The Initializer ---
 let hasInitialized = false;
-const DICTIONARY_URL = 'https://pdsx74vla44vq2mf.public.blob.vercel-storage.com/scrabdledictionary2.json';
+const DICTIONARY_URL = 'https://pdsx74vla44vq2mf.public.blob.vercel-storage.com/scrabdledictionary5.json';
 
 export async function initializeDictionary(): Promise<void> {
   if (hasInitialized) return;
@@ -53,14 +55,17 @@ export async function initializeDictionary(): Promise<void> {
   try {
     const response = await fetch(DICTIONARY_URL);
     if (!response.ok) throw new Error("Failed to fetch dictionary");
+
+    // 3. INFO: The JSON is an array of tuples: [string, WordData][]
+    // This maps perfectly to the Map constructor.
     const data: [string, WordData][] = await response.json();
 
-    // This MUTATES the exported variable. Any file that imported it
-    // will now see the populated data.
     dictionary = new Map(data);
 
     console.log(`Global dictionary initialized with ${dictionary.size} words.`);
   } catch (error) {
     console.error("Could not initialize dictionary:", error);
+    // Optional: Reset initialized flag so we can try again if it failed
+    hasInitialized = false; 
   }
 }

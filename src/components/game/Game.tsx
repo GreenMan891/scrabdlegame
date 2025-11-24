@@ -212,16 +212,63 @@ export default function Game() {
             console.log('[INIT HELPER] Hydrating from saved state.');
             const allPossibleDailyRules: AnyRule[] = [...BasePointRules, ...skillMultiplierRules, ...connectorRules];
 
-            // 2. Rebuild the dailyRules array by finding the full rule object for each saved ID.
-            const hydratedRules = (savedState.dailyRuleIds || [])
+            // Helper: hydrate a list of rule IDs into full AnyRule objects
+            const hydrateFromIds = (ids?: string[]) => (ids || [])
                 .map(ruleId => allPossibleDailyRules.find(r => r.id === ruleId))
-                .filter((rule): rule is AnyRule => !!rule); // This filters out any undefined results safely
+                .filter((rule): rule is AnyRule => !!rule);
+
+            // Helper: try to read an override from localStorage (developer/runtime override)
+            const readOverrideFromStorage = (): string[] | null => {
+                try {
+                    const raw = localStorage.getItem('dailyRulesOverride');
+                    if (!raw) return null;
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) return parsed as string[];
+                } catch (e) {
+                    console.warn('[INIT HELPER] Failed to parse dailyRulesOverride from localStorage', e);
+                }
+                return null;
+            };
+
+            // Expose a runtime helper so developers (or other code) can overwrite the saved rules.
+            // Usage in the console: `overwriteSavedRules(['base_long_word', 'skill_double_vowels', 'connector_adjacency'])`
+            // Passing `null` or calling `overwriteSavedRules()` without args will clear the override and restore the saved rules.
+            (window as any).overwriteSavedRules = (newIds?: string[] | null) => {
+                try {
+                    if (newIds && Array.isArray(newIds)) {
+                        localStorage.setItem('dailyRulesOverride', JSON.stringify(newIds));
+                        const newHydrated = hydrateFromIds(newIds);
+                        // Update UI immediately if initialize has already run
+                        try { setDailyRules(newHydrated); } catch (_) { /* ignore if not mounted yet */ }
+                        return newHydrated;
+                    } else {
+                        localStorage.removeItem('dailyRulesOverride');
+                        const defaultHydrated = hydrateFromIds(savedState.dailyRuleIds);
+                        try { setDailyRules(defaultHydrated); } catch (_) { }
+                        return defaultHydrated;
+                    }
+                } catch (e) {
+                    console.error('[INIT HELPER] overwriteSavedRules failed', e);
+                    return hydrateFromIds(savedState.dailyRuleIds);
+                }
+            };
+
+            // Determine which set of rule IDs to use: storage override > saved state
+            const overrideIds = readOverrideFromStorage();
+            const ruleIdsToUse = overrideIds ?? savedState.dailyRuleIds;
+
+            // 2. Rebuild the dailyRules array by finding the full rule object for each ID we decided to use.
+            const hydratedRules = hydrateFromIds(ruleIdsToUse);
 
             if (savedState.themeOfTheDay) {
                 setThemeOfTheDay(savedState.themeOfTheDay);
             }
             if (savedState.typeOfTheDay) {
                 setTypeOfTheDay(savedState.typeOfTheDay);
+            }
+            if (savedState.isScoreSubmitted) {
+                setIsScoreSubmitted(true);
+                hasSubmittedScore.current = true;
             }
             // const validTilesInHand = savedState?.hand.filter(t => t !== null);
             // console.log('[INIT HELPER] Valid tiles in hand:', validTilesInHand.length);
@@ -342,40 +389,39 @@ export default function Game() {
         // We only want this effect to run when the game is over.
         if (gameStatus !== 'over') return;
 
-        // Use the ref to ensure we only ever submit the score ONCE.
+        // CHECK 1: If the UI state is already submitted, stop.
+        if (isScoreSubmitted) return;
+
+        // CHECK 2: Hydration/Reload Safety.
+        // If the user refreshes, isScoreSubmitted resets to false, but the score 
+        // might already be in playerStats. We check this to prevent re-submitting.
+        const todayStr = new Date().toISOString().slice(0, 10);
+        if (playerStats?.lastGame &&
+            playerStats.lastGame.date === todayStr &&
+            playerStats.lastGame.score === finalScore) {
+
+            console.log("Score found in local stats. Skipping upload and showing leaderboard.");
+            hasSubmittedScore.current = true;
+            setIsScoreSubmitted(true);
+            return;
+        }
+
+        // CHECK 3: The Ref Lock.
+        // Prevents double-firing while the async operation is in progress.
         if (hasSubmittedScore.current) {
-            console.log("Score has already been submitted, skipping.");
             return;
         }
 
         const submitScores = async () => {
-            // Check for necessary data before proceeding
-            if (!playerStats || !updateStats) {
-                console.error("Cannot submit score: playerStats or update function is missing.");
-                return;
-            }
+            if (!playerStats || !updateStats) return;
 
             console.log("Game over! Submitting scores to server...");
 
-            // Mark as submitted immediately to prevent race conditions.
+            // Lock immediately
             hasSubmittedScore.current = true;
-            //ISSUE WITH LOADING IN THINGS. WHEN WE LOAD THE BONUS LETTER RULE, THE LETTER IS SET INITIALLY BUT IS FORGOTTEN WHEN WE RELOAD THE GAME
-            //ALSO THE GAME DIDNT RESET THE NEXT DAY
 
             try {
-                const todayStr = new Date().toISOString().slice(0, 10);
-
-                // Update local stats for immediate UI feedback
-                const newStats: PlayerStats = { ...playerStats };
-                let isNewHighScore = false;
-                if (finalScore > newStats.highScore) {
-                    newStats.highScore = finalScore;
-                    isNewHighScore = true;
-                }
-                newStats.lastGame = { date: todayStr, score: finalScore };
-                updateStats(newStats);
-
-                // Submit daily score
+                // 1. Update Server first
                 await fetch('/api/submit-score', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -386,8 +432,8 @@ export default function Game() {
                     }),
                 });
 
-                // Submit new high score if applicable
-                if (isNewHighScore) {
+                // 2. Check/Update High Score
+                if (finalScore > playerStats.highScore) {
                     await fetch('/api/update-highscore', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -397,21 +443,35 @@ export default function Game() {
                         }),
                     });
                 }
-                if (setIsScoreSubmitted) {
-                    setIsScoreSubmitted(true);
+
+                // 3. Update Local Context LAST. 
+                // Doing this last prevents the component from re-rendering via Context 
+                // update before the network calls are done.
+                const newStats: PlayerStats = { ...playerStats };
+                if (finalScore > newStats.highScore) {
+                    newStats.highScore = finalScore;
                 }
+                newStats.lastGame = { date: todayStr, score: finalScore };
+                updateStats(newStats);
+
+                // 4. Update Local UI State
+                setIsScoreSubmitted(true);
                 console.log("Scores successfully submitted and state updated.");
 
             } catch (error) {
-                console.error("Failed to submit scores to server:", error);
-                // Optional: reset the flag if the API call fails, allowing a retry?
-                // hasSubmittedScore.current = false;
+                console.error("Failed to submit scores:", error);
+                // Optional: Unlock to allow retry on error
+                // hasSubmittedScore.current = false; 
             }
         };
 
         submitScores();
 
-    }, [gameStatus, playerStats, finalScore, timeLeft, updateStats]);
+        // We remove `playerStats` from the dependency array to prevent the effect 
+        // from re-running immediately when updateStats is called.
+        // We only care if gameStatus changes or if we haven't submitted yet.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [gameStatus, finalScore, isScoreSubmitted]);
 
     useEffect(() => {
         const container = gridContainerRef.current;
@@ -450,13 +510,15 @@ export default function Game() {
             dailyRuleIds: dailyRules.map(rule => rule.id), // This will now have data
             metRuleCounts: Array.from(metRuleCounts.entries()),
             timeLeft, bonusLetterData: bonusLetterData,
-            isGameOver: gameStatus === 'over', themeOfTheDay: themeOfTheDay, typeOfTheDay: typeOfTheDay,
+            isGameOver: gameStatus === 'over', themeOfTheDay: themeOfTheDay,
+            typeOfTheDay: typeOfTheDay,
+            isScoreSubmitted: isScoreSubmitted
         };
 
         saveDailyGameState(gameState);
     }, [
         grid, hand, tileBag, timeLeft, gameStatus, finalScore, saveDailyGameState,
-        basePoints, bonusPoints, dailyRules, metRuleCounts, totalLengths, themeOfTheDay, typeOfTheDay
+        basePoints, bonusPoints, dailyRules, metRuleCounts, totalLengths, themeOfTheDay, typeOfTheDay, isScoreSubmitted
     ]);
 
 

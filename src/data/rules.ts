@@ -418,8 +418,7 @@ export const skillMultiplierRules: SkillMultiplierRule[] = [
                 return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
             }
 
-            const lemma = lemmatizer(word.toLowerCase());
-            const wordData = dictionary.get(lemma);
+            const wordData = dictionary.get(word.toLowerCase());
             if (wordData?.type && wordData.type.includes(typeOfTheDay.name as any)) {
                 // Here, the 'bonus' is the multiplier value.
                 return { bonus: typeOfTheDay.multiplier, achievementCount: 1, contributingTileIds: new Set(tiles.map(t => t.id)) };
@@ -441,10 +440,10 @@ export const skillMultiplierRules: SkillMultiplierRule[] = [
                 return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
             }
 
-            const lemma = lemmatizer(word.toLowerCase());
-            const wordData = dictionary.get(lemma);
-            console.log(`Checking word: ${word} with lemma: ${lemma} and theme: ${themeOfTheDay.name}`);
 
+            const wordData = dictionary.get(word.toLowerCase());
+            console.log(`Checking word: ${word} and theme: ${themeOfTheDay.name}`);
+            console.log('Word data from dictionary:', wordData);
             // Check if the word's theme matches the theme of the day
             if (
                 wordData?.theme &&
@@ -553,8 +552,8 @@ export const connectorRules: ConnectorRule[] = [
                     const wordA = words[i];
                     const wordB = words[j];
 
-                    const dataA = dictionary.get(lemmatizer(wordA.toLowerCase()));
-                    const dataB = dictionary.get(lemmatizer(wordB.toLowerCase()));
+                    const dataA = dictionary.get(wordA.toLowerCase());
+                    const dataB = dictionary.get(wordB.toLowerCase());
 
                     // Check if they have at least one matching, defined theme
                     if (!dataA?.theme || !dataB?.theme) continue;

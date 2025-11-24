@@ -29,6 +29,7 @@ export interface SavedDailyState {
   isGameOver: boolean;
   themeOfTheDay: ThemeData | null; // NEW: Theme of the day
   typeOfTheDay: TypeData | null; // NEW: Type of the day
+  isScoreSubmitted: boolean;
 }
 
 
