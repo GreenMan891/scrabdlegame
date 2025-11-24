@@ -8,7 +8,7 @@ interface GameOverModalProps {
 
 export default function GameOverModal({ score, isScoreSubmitted }: GameOverModalProps) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
       {/* We make the content box taller and add padding to accommodate the leaderboard */}
       <div className="bg-green-900 text-white rounded-xl shadow-2xl flex flex-col items-center gap-4 text-center w-full max-w-lg p-6 animate-fade-in-up">
         <h2 className="text-4xl font-extrabold text-yellow-400">Game Over!</h2>

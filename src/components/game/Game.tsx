@@ -1254,7 +1254,7 @@ export default function Game() {
     const RuleColours = ['#22d3ee', '#d946ef', '#facc15']; // Cyan, Magenta, Yellow
 
     return (
-        <div className="w-full flex flex-col bg-transparent text-white rounded-lg select-none">
+        <div className="relative w-full flex flex-col bg-transparent text-white rounded-lg select-none">
             {/* Top Row: Score and Timer (Already responsive, no changes) */}
             <div className="w-full flex justify-between items-center mb-4 px-2 sm:px-4 pt-2 sm:pt-4">
                 <div className="flex-grow">
