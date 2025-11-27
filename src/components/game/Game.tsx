@@ -142,6 +142,19 @@ export default function Game() {
     const [scoringBaseScore, setScoringBaseScore] = useState<number>(0);
     const [scoringMultScore, setScoringMultScore] = useState<number>(1);
 
+    const [tooltipData, setTooltipData] = useState<{
+        tile: PlacedTile;
+        wordData: {
+            word: string;
+            points: number;
+            theme: string;
+            type: string;
+        }[];
+        bonusValue: number;
+    } | null>(null);
+    const [tooltipPosition, setTooltipPosition] = useState<{ x: number, y: number } | null>(null);
+    const hoverTimerRef = useRef<NodeJS.Timeout | null>(null);
+
     // console.log('[RENDER] Component rendering.', {
     //     isDragging: !!draggingTile,
     //     dragPosition: dragPosition
@@ -192,7 +205,19 @@ export default function Game() {
             setBonusLetterData(initialState.bonusLetterData);
             setMetRuleCounts(initialState.metRuleCounts);
             setTimeLeft(initialState.timeLeft);
-            setGameStatus(initialState.isGameOver ? 'over' : 'pregame');
+            let targetStatus: 'pregame' | 'playing' | 'over' = 'pregame';
+
+            if (loadedState) {
+                if (initialState.isGameOver) {
+                    targetStatus = 'over';
+                } else {
+                    targetStatus = 'pregame';
+                }
+            } else {
+                targetStatus = 'pregame';
+            }
+
+            setGameStatus(targetStatus);
             setThemeOfTheDay(initialState.themeOfTheDay);
             setTypeOfTheDay(initialState.typeOfTheDay);
 
@@ -277,10 +302,32 @@ export default function Game() {
             //     const randomTile = validTilesInHand[Math.floor(seededRandom() * validTilesInHand.length)];
             //     bonusLetterData = { letter: randomTile.letter, value: randomTile.value };
             // }
+            let loadedTheme = savedState.themeOfTheDay;
+            if (!loadedTheme) {
+                const randomThemeIndex = Math.floor(seededRandom() * allThemes.length);
+                loadedTheme = allThemes[randomThemeIndex];
+                // We set it so the state updates correctly later
+                setThemeOfTheDay(loadedTheme);
+            } else {
+                setThemeOfTheDay(loadedTheme);
+            }
+
+            let loadedType = savedState.typeOfTheDay;
+            if (!loadedType) {
+                // Ensure we consume the random generator in the same order as a fresh game
+                // (Assuming Theme was generated first in fresh game, which it is)
+                const randomTypeIndex = Math.floor(seededRandom() * allTypes.length);
+                loadedType = allTypes[randomTypeIndex];
+                setTypeOfTheDay(loadedType);
+            } else {
+                setTypeOfTheDay(loadedType);
+            }
             return {
                 ...savedState,
                 dailyRules: hydratedRules,
                 metRuleCounts: new Map(savedState.metRuleCounts || []),
+                themeOfTheDay: loadedTheme,
+                typeOfTheDay: loadedType,
             };
 
         }
@@ -1017,7 +1064,7 @@ export default function Game() {
         setScoringMultScore(multScore);
         const total = (letterScore + flatBonus) * (lengthMultiplier * skillMultiplierPool);
 
-        return { letterScore, flatBonus, lengthMultiplier, skillMultiplierPool, total, baseScore, multScore };
+        return { letterScore, flatBonus, lengthMultiplier, skillMultiplierPool, total, baseScore, multScore, themeOfTheDay, typeOfTheDay };
     };
 
 
@@ -1225,6 +1272,114 @@ export default function Game() {
 
     }, [draggingTile, grid, hand, checkForWords, tileSize, gameStatus]);
 
+    const handleTileHover = (e: React.MouseEvent, tile: PlacedTile, x: number, y: number) => {
+        // Clear any existing timer
+        if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+
+        // Start 2 second timer
+        hoverTimerRef.current = setTimeout(() => {
+            if (!dictionary) return;
+
+            // 1. Find all valid words on the board currently
+            const wordToTilesMap = findAllValidWords(grid);
+            const foundWords: { word: string; points: number; theme: string; type: string }[] = [];
+
+            let specificTileBonus = 0;
+
+            // 1. Calculate BOARD-SCOPE Base Rule Bonuses (Calculate once)
+            const boardContext: BoardContext = {
+                wordToTilesMap: wordToTilesMap,
+                handIsEmpty: hand.every(t => t === null)
+            };
+
+            dailyRules.forEach(rule => {
+                if (rule.type === 'base' && rule.scope === 'board') {
+                    const result = rule.apply(boardContext);
+                    // If this tile contributed to the board rule (e.g., is part of the Longest Word), 
+                    // add the full bonus amount.
+                    if (result.bonus > 0 && result.contributingTileIds.has(tile.id)) {
+                        specificTileBonus += result.bonus;
+                    }
+                }
+            });
+
+            // 2. Filter for words that contain THIS specific tile ID
+            wordToTilesMap.forEach((tiles, word) => {
+                if (tiles.some(t => t.id === tile.id)) {
+
+                    // 3. Calculate score and check metadata for this word
+                    const scoreData = calculateFullScoreForWord(word, tiles);
+
+                    const wordContext: WordContext = {
+                        word,
+                        tiles,
+                        bonusLetterData: bonusLetterData ?? undefined,
+                        themeOfTheDay,
+                        typeOfTheDay
+                    };
+
+                    dailyRules.forEach(rule => {
+                        if (rule.type === 'base' && rule.scope === 'word') {
+                            const result = rule.apply(wordContext);
+                            if (result.bonus > 0 && result.contributingTileIds.has(tile.id)) {
+                                specificTileBonus += result.bonus;
+                            }
+                        }
+                    });
+                    // Determine Theme/Type status based on whether the rules applied
+                    // We re-run the specific context checks to see if they match the daily theme/type
+                    let themeStr = "None";
+                    let typeStr = "None"; // Default to None or Noun depending on logic
+
+                    // Check if Theme/Type applies
+                    const wordData = dictionary.get(word.toLowerCase());
+
+                    // Theme: dictionary stores an array of theme names (strings).
+                    // Join them into a readable comma-separated string, or "None" if absent.
+                    themeStr = wordData?.theme && wordData.theme.length > 0
+                        ? wordData.theme.join(', ')
+                        : "None";
+
+                    // Type: prefer the daily type if it matches, otherwise use dictionary types.
+                    if (typeOfTheDay && (typeOfTheDay as any).check && (typeOfTheDay as any).check(word, wordData)) {
+                        typeStr = (typeOfTheDay as any).name || typeOfTheDay.name;
+                    } else if (wordData?.type && wordData.type.length > 0) {
+                        // dictionary.type values are plural like "nouns"; convert to singular
+                        // and capitalize for display (e.g. "nouns" -> "Noun").
+                        typeStr = wordData.type
+                            .map(t => {
+                                const singular = t.endsWith('s') ? t.slice(0, -1) : t;
+                                return singular.charAt(0).toUpperCase() + singular.slice(1);
+                            })
+                            .join(', ');
+                    } else {
+                        typeStr = "None";
+                    }
+
+                    foundWords.push({
+                        word: word,
+                        points: Math.round(scoreData.total),
+                        theme: themeStr,
+                        type: typeStr
+                    });
+                }
+            });
+
+            setTooltipData({ tile, wordData: foundWords, bonusValue: specificTileBonus });
+            setTooltipPosition({ x: x * tileSize, y: y * tileSize });
+
+        }, 500);
+    };
+
+    const handleTileLeave = () => {
+        if (hoverTimerRef.current) {
+            clearTimeout(hoverTimerRef.current);
+            hoverTimerRef.current = null;
+        }
+        setTooltipData(null);
+        setTooltipPosition(null);
+    };
+
     useEffect(() => {
         // Add listeners for both mouse and touch events
         window.addEventListener('mousemove', handleDragMove);
@@ -1248,8 +1403,8 @@ export default function Game() {
         return `${minutes}:${secs < 10 ? '0' : ''}${secs}`;
     }
 
-    // if (isLoadingDictionary) {
-    //     return <div className="text-center p-10 text-xl">Loading Dictionary...</div>;
+    // if (isLoading) {
+    //     return <div className="w-full h-screen flex items-center justify-center text-white text-xl">Loading...</div>;
     // }
     const RuleColours = ['#22d3ee', '#d946ef', '#facc15']; // Cyan, Magenta, Yellow
 
@@ -1355,7 +1510,7 @@ export default function Game() {
             <div className="w-full flex flex-col lg:flex-row gap-4">
 
                 {/* Left Column: Game Board Container */}
-                <div ref={gridContainerRef} className="flex-grow w-full flex items-center justify-center">
+                <div ref={gridContainerRef} className="relative flex-grow w-full flex items-center justify-center">
                     <div
                         ref={gameBoardRef}
                         className="relative bg-green-900 border-y-4 lg:border-4 border-black mx-auto lg:mx-0"// mx-auto centers it if there's extra space
@@ -1387,6 +1542,8 @@ export default function Game() {
                                     <div
                                         key={`${x}-${y}`}
                                         className="w-full h-full border border-gray-100/50 flex items-center justify-center"
+                                        onMouseEnter={(e) => tile && handleTileHover(e, tile, x, y)}
+                                        onMouseLeave={handleTileLeave}
                                     >
                                         {tile && (
                                             <div
@@ -1412,6 +1569,63 @@ export default function Game() {
                                     </div>
                                 );
                             })
+                        )}
+
+                        {tooltipData && tooltipPosition && (
+                            // We determine row index by dividing pixel position by tile size
+                            (() => {
+                                const rowIndex = Math.floor(tooltipPosition.y / tileSize);
+                                // If we are in the bottom 4 rows (indices 8, 9, 10, 11), show above
+                                const showAbove = rowIndex >= 7;
+
+                                return (
+                                    <div
+                                        className={`absolute z-50 flex items-center pointer-events-none ${showAbove ? 'flex-col-reverse' : 'flex-col'
+                                            }`}
+                                        style={{
+                                            left: tooltipPosition.x + tileSize / 2,
+                                            // If showing above: Position at top of tile (minus 5px gap)
+                                            // If showing below: Position at bottom of tile (plus 5px gap)
+                                            top: showAbove
+                                                ? tooltipPosition.y - 5
+                                                : tooltipPosition.y + tileSize + 5,
+
+                                            // If showing above: Translate Y -100% so the bottom of the tooltip sits on the 'top' coordinate
+                                            transform: showAbove
+                                                ? 'translateX(-50%) translateY(-100%)'
+                                                : 'translateX(-50%)',
+                                            width: 'max-content'
+                                        }}
+                                    >
+                                        {/* Top Bubble: Letter Info */}
+                                        {/* We add margins conditionally based on direction so the gap is always between bubble and tile */}
+                                        <div className={`bg-white text-black border-2 border-black rounded-xl p-3 shadow-xl flex flex-col items-center min-w-[120px] ${showAbove ? 'mt-2' : 'mb-2'
+                                            }`}>
+                                            <span className="font-bold text-lg mb-1">{tooltipData.tile.letter}</span>
+                                            <div className="flex justify-between w-full text-xs font-semibold px-2 gap-4">
+                                                <span>Points: {tooltipData.tile.value}</span>
+                                                <span>Bonus: {tooltipData.bonusValue > 0 ? `+${tooltipData.bonusValue}` : 'None'}</span>
+                                            </div>
+                                        </div>
+
+                                        {/* Word Bubbles */}
+                                        {tooltipData.wordData.map((data, idx) => (
+                                            <div key={idx} className={`bg-white text-black border-2 border-black rounded-xl p-3 shadow-xl text-sm text-left w-full ${showAbove ? 'mb-1' : 'mb-1' // Always margin bottom between bubbles works fine in reverse too
+                                                }`}>
+                                                <div className="font-bold border-b border-gray-300 pb-1 mb-1">
+                                                    In word: {data.word}
+                                                </div>
+                                                <div className="space-y-0.5 text-xs font-medium">
+                                                    <p>Total points: {data.points}</p>
+                                                    <p>Length: {data.word.length}</p>
+                                                    <p>Theme: {data.theme}</p>
+                                                    <p>Type: {data.type}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                );
+                            })()
                         )}
                     </div>
                 </div>
@@ -1456,7 +1670,7 @@ export default function Game() {
                     )}
                 </div>
             </div>
-            {gameStatus === 'pregame' && (
+            {gameStatus === 'pregame' && isLoading == false && (
                 <PreGameModal
                     playerStats={playerStats ?? null}
                     savedDailyState={savedDailyState}

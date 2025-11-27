@@ -440,7 +440,6 @@ export const skillMultiplierRules: SkillMultiplierRule[] = [
                 return { bonus: 0, achievementCount: 0, contributingTileIds: new Set() };
             }
 
-
             const wordData = dictionary.get(word.toLowerCase());
             console.log(`Checking word: ${word} and theme: ${themeOfTheDay.name}`);
             console.log('Word data from dictionary:', wordData);

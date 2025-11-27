@@ -1,13 +1,72 @@
 "use client";
 
 import Link from 'next/link';
-import { useContext } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { PlayerStatsContext } from '@/context/PlayerStatsContext';
 import Tile from '../game/Tile';
 
 export default function Header() {
   const context = useContext(PlayerStatsContext);
   const playerStats = context?.stats;
+
+  const [topScore, setTopScore] = useState<number | null>(null);
+  const [topLoading, setTopLoading] = useState(true);
+  const [resolvedPlayerId, setResolvedPlayerId] = useState<number | null>(null);
+  const [playerRank, setPlayerRank] = useState<number | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    async function fetchTop() {
+      try {
+        // Resolve player id: prefer context, fallback to localStorage
+        let pid: number | null = null;
+        if (playerStats && typeof playerStats.username === 'number') {
+          pid = playerStats.username;
+        } else {
+          try {
+            const saved = localStorage.getItem('dailyWordPlayerStats') || localStorage.getItem('dailywordplayerstats') || localStorage.getItem('dailyWordPlayerStats');
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (parsed && typeof parsed.username === 'number') pid = parsed.username;
+            }
+          } catch (e) {
+            // ignore parse errors
+          }
+        }
+
+        if (mounted) setResolvedPlayerId(pid);
+
+        const url = pid ? `/api/leaderboard?playerId=${encodeURIComponent(String(pid))}` : '/api/leaderboard';
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('network');
+        const data = await res.json();
+
+        const top = data?.topScores?.[0]?.score ?? null;
+        if (mounted) setTopScore(top);
+
+        // Determine player's rank: API returns playerRankData when player is outside top 10
+        let rank: number | null = null;
+        if (pid != null) {
+          if (data?.playerRankData && typeof data.playerRankData.rank === 'number') {
+            rank = data.playerRankData.rank;
+          } else if (Array.isArray(data?.topScores)) {
+            const idx = data.topScores.findIndex((s: any) => s.playerId === pid);
+            if (idx !== -1) rank = idx + 1;
+          }
+        }
+        if (mounted) setPlayerRank(rank);
+      } catch (e) {
+        if (mounted) {
+          setTopScore(null);
+          setPlayerRank(null);
+        }
+      } finally {
+        if (mounted) setTopLoading(false);
+      }
+    }
+    fetchTop();
+    return () => { mounted = false; };
+  }, []);
 
   // VVVV DEFINE THE TITLE AND ITS TILES VVVV
   const title = "SCRABDLE";
@@ -46,10 +105,23 @@ export default function Header() {
         </Link>
         
         <div className="flex items-center gap-4 text-sm font-semibold">
-          {playerStats ? (
-            <span>Player #{playerStats.username}</span>
+          {(resolvedPlayerId !== null || playerStats) ? (
+            <span>
+              Player #{resolvedPlayerId ?? playerStats?.username}
+              {playerRank ? <span className="ml-2 text-sm">(Rank #{playerRank})</span> : null}
+            </span>
           ) : (
             <span className="text-gray-400">Loading...</span>
+          )}
+
+          <span className="text-gray-300">|</span>
+
+          {topLoading ? (
+            <span className="text-gray-400">Top score today: Loading...</span>
+          ) : topScore !== null ? (
+            <span>Top score today: {topScore}</span>
+          ) : (
+            <span className="text-gray-400">Top score today: —</span>
           )}
         </div>
       </nav>
